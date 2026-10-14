@@ -141,6 +141,7 @@ for z in arm64-v8a armeabi-v7a x86 x86_64; do
     unzip -qqjo "$ZIPFILE" "zygisk/$z.so" -d "$MODPATH/zygisk" 2>/dev/null
     ZN=$((ZN+1))
   fi
+done
 install_file "classes.dex" "$MODPATH"
 if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "pif.dex"; then
   install_file "pif.dex" "$MODPATH"
