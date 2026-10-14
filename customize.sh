@@ -203,24 +203,21 @@ fi
 
 # --- /data/adb/tricky_store config ----------------------------------------
 mkdir -p "$CONFIG_DIR"
-if [ -f "$CONFIG_DIR/keybox.xml" ]; then
-  ui_print "keybox kept ($(wc -c < "$CONFIG_DIR/keybox.xml") bytes)"
-else
-  install_file "keybox.xml" "$CONFIG_DIR"
-fi
+install_file "keybox.xml" "$CONFIG_DIR"
+chmod 644 "$CONFIG_DIR/keybox.xml"
+ui_print "- Clean Keybox installed ($(wc -c < "$CONFIG_DIR/keybox.xml") bytes)"
 
-# target.txt is (re)built on boot (service.sh) and on every [Action] tap — just
-# drop a default seed here so TrickyStore has something to read on first boot.
-if [ -f "$CONFIG_DIR/target.txt" ]; then
-  sed -i 's/^com\.google\.android\.gms$/com.google.android.gms!/' "$CONFIG_DIR/target.txt"
-  sed -i 's/^com\.android\.vending$/com.android.vending!/' "$CONFIG_DIR/target.txt"
-  sed -i 's/^com\.google\.android\.gsf$/com.google.android.gsf!/' "$CONFIG_DIR/target.txt"
-else
-  install_file "target.txt" "$CONFIG_DIR"
-fi
+install_file "target.txt" "$CONFIG_DIR"
+chmod 644 "$CONFIG_DIR/target.txt"
 
-# Protect verified fingerprint from auto-fetch overrides
-[ -f "$CONFIG_DIR/no_auto_fp" ] || touch "$CONFIG_DIR/no_auto_fp"
+echo "all=2026-10-05" > "$CONFIG_DIR/security_patch.txt"
+chmod 644 "$CONFIG_DIR/security_patch.txt"
+
+cp -f "$MODPATH/custom.pif.prop" "$CONFIG_DIR/custom.pif.prop" 2>/dev/null
+cp -f "$MODPATH/pif.prop" "$CONFIG_DIR/pif.prop" 2>/dev/null
+chmod 644 "$CONFIG_DIR/custom.pif.prop" "$CONFIG_DIR/pif.prop" 2>/dev/null
+
+touch "$CONFIG_DIR/no_auto_fp"
 
 if [ ! -f "$CONFIG_DIR/hbk" ]; then
   head -c 32 /dev/random > "$CONFIG_DIR/hbk"

@@ -1,6 +1,6 @@
 #!/system/bin/sh
-# AlwaysStrong — native fingerprint fallback.
-#
+# Disabled: Preserves verified October 2026 Pixel 6a props to prevent prop mismatch
+exit 0
 # PlayIntegrityFork's autopif4.sh crawls Google's Pixel build servers with
 # busybox `wget`, whose built-in TLS stalls mid-stream on some devices/CDNs —
 # so on those devices autopif4 silently fails and no fresh fingerprint lands.

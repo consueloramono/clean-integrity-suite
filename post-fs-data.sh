@@ -53,7 +53,8 @@ if ! $SKIPDELPROP; then
 fi
 resetprop_if_diff ro.boot.veritymode.managed yes
 resetprop_if_diff ro.debuggable 0
-resetprop_if_diff ro.force.debuggable 0
+resetprop_if_diff ro.boot.verifiedbootstate green
+resetprop_if_diff ro.boot.flash.locked 1
 resetprop_if_diff ro.secure 1
 
 # Custom ROM leak detection — delete props that fingerprint non-stock ROMs

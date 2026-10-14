@@ -187,7 +187,11 @@ apply_pif() { engine_install_pif "$1"; }
 #    it is 0 only when the engine accepted a fresh fingerprint — a stale file
 #    must not count as success.
 row "🌐" "fetching fingerprint..."
-if [ -x "$MODPATH/pif_native_fetch.sh" ]; then
+if [ -f "$CONFIG_DIR/no_auto_fp" ] && [ -f "$MODPATH/pif.prop" ]; then
+    apply_pif "$MODPATH/pif.prop"
+    FP_OK=1
+    FP_SRC="verified"
+elif [ -x "$MODPATH/pif_native_fetch.sh" ]; then
     bounded "$ENGINE_NATIVE_TIMEOUT" sh "$MODPATH/pif_native_fetch.sh" \
         >"$CONFIG_DIR/autopif.log" 2>&1 && FP_OK=1
     [ "$FP_OK" = 1 ] && FP_SRC="native"

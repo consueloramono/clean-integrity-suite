@@ -1,7 +1,7 @@
 id=tricky_store
-name=Clean Integrity Suite (Pro)
-version=v2.2.0
-versionCode=220
-author=Custom (TEESimulator + ShadowHook Zygisk)
-description=🟢🟢🟢 Strong Play Integrity suite (Android 10 - 17). ByteDance ShadowHook + TEESimulator + Auto October 2026 Canary & DroidGuard Cache Fixer.
+name=Clean Integrity Suite (Offline Strong)
+version=v2.3.0
+versionCode=230
+author=Clean Integrity (TEESimulator + ShadowHook + Local Keybox)
+description=🟢🟢🟢 100% Offline Local STRONG Play Integrity suite (Android 10 - 17). Local hardware Keybox + ByteDance ShadowHook + Pixel 6a Canary October 2026.
 banner=banner.png
