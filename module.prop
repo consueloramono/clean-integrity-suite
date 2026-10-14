@@ -1,7 +1,7 @@
 id=tricky_store
 name=Clean Integrity Suite (Pro)
-version=v2.1.0
-versionCode=210
-author=Custom (TEESimulator-RS + PlayIntegrityFork)
-description=🟢🟢🟢 Strong Play Integrity suite. Local TEESimulator-RS + PlayIntegrityFork + Auto Pixel Canary + DroidGuard & VBMeta Fixer.
+version=v2.2.0
+versionCode=220
+author=Custom (TEESimulator + ShadowHook Zygisk)
+description=🟢🟢🟢 Strong Play Integrity suite (Android 10 - 17). ByteDance ShadowHook + TEESimulator + Auto October 2026 Canary & DroidGuard Cache Fixer.
 banner=banner.png

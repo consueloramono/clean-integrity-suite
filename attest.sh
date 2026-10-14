@@ -21,9 +21,15 @@ attest_install() {
         install_file "lib/$ABI_DIR/libcertgen.so" "$MODPATH"
         HAS_CERTGEN=1
     fi
+    if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "lib/$ABI_DIR/libevoker.so"; then
+        install_file "lib/$ABI_DIR/libevoker.so" "$MODPATH"
+        mv "$MODPATH/libevoker.so" "$MODPATH/evoker"
+        chmod 755 "$MODPATH/evoker" 2>/dev/null
+    fi
     mv "$MODPATH/libinject.so"     "$MODPATH/inject"
     mv "$MODPATH/libsupervisor.so" "$MODPATH/supervisor"
     install_file "tee_classes.dex" "$MODPATH"
+    install_file "classes.dex" "$MODPATH"
     chmod 755 "$MODPATH/inject" "$MODPATH/supervisor" 2>/dev/null
     if [ "$HAS_CERTGEN" -eq 1 ]; then
         ui_print "TEESim installed ($ABI_DIR, native certgen)"

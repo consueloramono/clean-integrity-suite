@@ -94,7 +94,7 @@ for f in module.prop service.sh post-fs-data.sh action.sh \
          pif_native_fetch.sh prop_unify.sh logcat_cleanup.sh collect_logs.sh \
          import_pif.sh reapply_spoof.sh lite_pif_sync.sh \
          pif_fallback_1.prop pif_fallback_2.prop \
-         target.txt daemon pif.prop \
+         target.txt daemon pif.prop custom.pif.prop pif.dex \
          $ENGINE_FILES ; do
   install_file "$f" "$MODPATH"
 done
@@ -141,8 +141,10 @@ for z in arm64-v8a armeabi-v7a x86 x86_64; do
     unzip -qqjo "$ZIPFILE" "zygisk/$z.so" -d "$MODPATH/zygisk" 2>/dev/null
     ZN=$((ZN+1))
   fi
-done
 install_file "classes.dex" "$MODPATH"
+if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "pif.dex"; then
+  install_file "pif.dex" "$MODPATH"
+fi
 
 HAS_ZYGISK_SO=0
 [ -f "$MODPATH/zygisk/$ABI_DIR.so" ] && HAS_ZYGISK_SO=1

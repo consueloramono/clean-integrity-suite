@@ -5,12 +5,14 @@
 
 MODDIR=$1
 
-if [ -f "$MODDIR/tee_classes.dex" ]; then
+if [ -f "$MODDIR/classes.dex" ]; then
+    CLASSPATH="$MODDIR/classes.dex"
+elif [ -f "$MODDIR/tee_classes.dex" ]; then
     CLASSPATH="$MODDIR/tee_classes.dex"
 elif [ -f "$MODDIR/service.apk" ]; then
     CLASSPATH="$MODDIR/service.apk"
 else
-    echo "Error: tee_classes.dex / service.apk not found in $MODDIR"
+    echo "Error: Neither classes.dex nor tee_classes.dex found in $MODDIR"
     exit 1
 fi
 

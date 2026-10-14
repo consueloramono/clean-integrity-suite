@@ -1,13 +1,41 @@
-FINGERPRINT=google/bluejay_beta/bluejay:CANARY/ZP11.260821.010/16290768:user/release-keys
+# Build Fields
 MANUFACTURER=Google
 MODEL=Pixel 6a
+FINGERPRINT=google/bluejay_beta/bluejay:CANARY/ZP11.260918.007/16484274:user/release-keys
+BRAND=google
 PRODUCT=bluejay_beta
 DEVICE=bluejay
-SECURITY_PATCH=2026-09-05
+RELEASE=CANARY
+ID=ZP11.260918.007
+INCREMENTAL=16484274
+TYPE=user
+TAGS=release-keys
+SECURITY_PATCH=2026-10-05
 DEVICE_INITIAL_SDK_INT=32
-spoofProvider=0
-spoofVendingFinger=0
+
+# System Properties
+ro.build.fingerprint=google/bluejay_beta/bluejay:CANARY/ZP11.260918.007/16484274:user/release-keys
+ro.build.id=ZP11.260918.007
+ro.product.model=Pixel 6a
+ro.product.vendor.model=Pixel 6a
+ro.product.brand=google
+ro.product.vendor.brand=google
+ro.product.device=bluejay
+ro.product.vendor.device=bluejay
+ro.product.manufacturer=Google
+ro.product.vendor.manufacturer=Google
+ro.product.name=bluejay_beta
+ro.product.vendor.name=bluejay_beta
+ro.build.version.security_patch=2026-10-05
+*.build.id=ZP11.260918.007
+*.security_patch=2026-10-05
+*api_level=32
+
+# Advanced Settings
 spoofBuild=1
 spoofProps=1
+spoofProvider=0
 spoofSignature=0
+spoofVendingFinger=1
 spoofVendingSdk=0
+verboseLogs=0
