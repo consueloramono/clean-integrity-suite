@@ -3,68 +3,16 @@ MODDIR="${0%/*}"
 MODPATH="$MODDIR"
 cd "$MODDIR"
 
-set +o standalone 2>/dev/null
-unset ASH_STANDALONE
-
 [ -f "$MODDIR/common_func.sh" ] && . "$MODDIR/common_func.sh"
 
-# --- Play Integrity engine adapter ---
-# Which prop file the zygisk reads, and what its spoof flags are called, is all
-# that differs between the two builds. engine.sh owns it; everything below is
-# identical in both.
-CONFIG_DIR=/data/adb/tricky_store
-if [ -f "$MODDIR/engine.sh" ]; then
-    . "$MODDIR/engine.sh"
-else
-    log -t "AlwaysStrong" "engine.sh missing — no fingerprint handling this boot"
-    engine_autopif()       { return 1; }
-    engine_install_pif()   { return 1; }
-    engine_enforce_spoof() { return 0; }
-    ENGINE=none
-fi
-
-# --- Attestation engine adapter (TEESimulator-RS | TrickyStoreOSS) -----------
-# build.sh overlays exactly one attest.sh; the daemon start/liveness below go
-# through it. Fall back to the TEESimulator pattern if it is somehow missing.
-if [ -f "$MODDIR/attest.sh" ]; then
-    . "$MODDIR/attest.sh"
-else
-    attest_early() { return 1; }
-    attest_start() { "$MODDIR/supervisor" "$MODDIR/daemon" "$MODDIR" & }
-    attest_alive() { pidof TEESimulator >/dev/null 2>&1 || pidof daemon >/dev/null 2>&1; }
-fi
-
-# Engines that hijack keystore2 (TrickyStoreOSS) must start at the service stage,
-# before sys.boot_completed — a late start misses the injection window and the
-# daemon crash-loops with EBADF. Engines that don't (TEESimulator) return false
-# here and are started after the boot-completed wait below.
-#
-# TrickyStoreOSS reads the verified-boot state when building the attestation
-# rootOfTrust. The lock-state props are otherwise only asserted in the late
-# block below (after boot_completed), so an early start could read the raw
-# ORANGE/unlocked values. Pin the rootOfTrust-relevant props here first so the
-# daemon reads green/locked; the late block re-asserts them for OEMs that reset
-# them during boot.
-if attest_early 2>/dev/null; then
-    resetprop_if_diff ro.boot.verifiedbootstate green
-    resetprop_if_diff vendor.boot.verifiedbootstate green
-    resetprop_if_diff ro.boot.vbmeta.device_state locked
-    resetprop_if_diff vendor.boot.vbmeta.device_state locked
-    resetprop_if_diff ro.boot.flash.locked 1
-    resetprop_if_diff ro.secureboot.lockstate locked
-    resetprop_if_diff ro.boot.veritymode enforcing
-    resetprop_if_diff vendor.boot.veritymode enforcing
-    attest_start
-fi
-
-# --- Recovery mode guard ---
+# Recovery mode guard
 resetprop_if_match ro.boot.mode recovery unknown
 resetprop_if_match ro.bootmode recovery unknown
 resetprop_if_match ro.boot.bootmode recovery unknown
 resetprop_if_match vendor.boot.mode recovery unknown
 resetprop_if_match vendor.boot.bootmode recovery unknown
 
-# --- SELinux enforcement ---
+# SELinux enforcement
 resetprop_if_diff ro.boot.selinux enforcing
 if ! ${SKIPDELPROP:-false}; then
     delprop_if_exist ro.build.selinux 2>/dev/null || true
@@ -74,172 +22,245 @@ if [ "$(toybox cat /sys/fs/selinux/enforce 2>/dev/null)" = "0" ]; then
     chmod 440 /sys/fs/selinux/policy
 fi
 
-# --- Late properties (after boot_completed) — required for some OEMs ---
-{
-until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 1; done
-
-# Verified-boot / bootloader-lock fingerprint
-resetprop_if_diff ro.secureboot.lockstate locked
-resetprop_if_diff ro.boot.flash.locked 1
-resetprop_if_diff ro.boot.realme.lockstate 1
-resetprop_if_diff ro.boot.vbmeta.device_state locked
-resetprop_if_diff vendor.boot.verifiedbootstate green
-resetprop_if_diff ro.boot.verifiedbootstate green
-resetprop_if_diff ro.boot.veritymode enforcing
-resetprop_if_diff vendor.boot.veritymode enforcing
-resetprop_if_diff vendor.boot.vbmeta.device_state locked
-resetprop_if_diff sys.oem_unlock_allowed 0
-resetprop_if_diff ro.boot.warranty_bit 0
-resetprop_if_diff ro.warranty_bit 0
-resetprop_if_diff ro.secure 1
-resetprop_if_diff ro.debuggable 0
-resetprop_if_diff ro.adb.secure 1
-resetprop_if_diff service.adb.root 0
-resetprop_if_diff ro.boot.vbmeta.invalidate_on_error yes
-
-# --- LineageOS prop scrub (hide derivative-ROM markers from PI checks) ---
-# Low-risk cosmetic strips (vendor name prefix, Aperture camera package list)
-# run always — they don't affect any Settings UI. The riskier deletes that can
-# break ROM features are gated behind the opt-in hide_rom_markers flag.
-LV=$(getprop ro.product.vendor.name 2>/dev/null)
-case "$LV" in
-    lineage_*) resetprop -n ro.product.vendor.name "${LV#lineage_}" ;;
-esac
-for LP in vendor.camera.aux.packagelist persist.vendor.camera.privapp.list; do
-    LCV=$(getprop "$LP" 2>/dev/null)
-    case "$LCV" in
-        *org.lineageos.aperture*)
-            LCV=$(echo "$LCV" | sed -e 's/,org\.lineageos\.aperture//g' \
-                                    -e 's/org\.lineageos\.aperture,//g' \
-                                    -e 's/^org\.lineageos\.aperture$//')
-            resetprop -n "$LP" "$LCV"
-            ;;
-    esac
-done
-# Lineage Health HAL: LineageOS Settings shows the "Fast charging" / charging
-# control toggles only when init.svc.vendor.lineage_health reports "running";
-# deleting the prop makes Settings believe the HAL is down and HIDES the whole
-# toggle (reported on LineageOS — the fast-charging switch disappears). The
-# "lineage" in the prop name is a PI tell, but PI doesn't read init.svc.*, so
-# dropping it costs the user a real feature for no integrity gain. Preserve by
-# default; only delete when the user opts into aggressive marker hiding. See
-# issue #7.
-#   Opt-in:  touch /data/adb/tricky_store/hide_rom_markers
-[ -f "$CONFIG_DIR/hide_rom_markers" ] && \
-    resetprop --delete init.svc.vendor.lineage_health 2>/dev/null
-}&
-
-# --- Conflict re-scan on every boot ---
-# A user can install a conflicting module AFTER they've installed AlwaysStrong
-# (the install-time scan in customize.sh only fires once). Re-run the same
-# disable-known-conflicts pass at every boot so a fresh install of e.g.
-# playintegrityfix doesn't silently break our hooks.
-if [ -x "$MODDIR/conflict_scan.sh" ]; then
-    MODPATH="$MODDIR" sh "$MODDIR/conflict_scan.sh" >/dev/null 2>&1
-    n=$?
-    [ "$n" -gt 0 ] && log -t "AlwaysStrong" "disabled $n conflicting module(s) at boot"
+# Verify PIF files exist (companion reads these at runtime)
+if [ ! -f "$MODDIR/pif.dex" ]; then
+    log -t "TEE-SIM" "WARNING: pif.dex missing! PIF Java injection will fail."
 fi
+for _pf in custom.pif.prop custom.pif.json pif.prop pif.json; do
+    [ -f "$MODDIR/$_pf" ] && break
+done
+[ ! -f "$MODDIR/$_pf" ] && log -t "TEE-SIM" "WARNING: No PIF config found! Run action button."
 
-# --- Wait for boot, then start TEE simulator ---
-while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done
-
-# Kill stale TEE / aswatcher processes from a previous service run. Two engines
-# do NOT belong in this sweep because their live daemon was already started early
-# (above) and killing it would drop a keystore2 injection that a post-boot restart
-# can't cleanly recover:
-#   - TrickyStoreOSS: its process names aren't listed here, so it's already safe.
-#   - TEESimulator (JingMatrix, teesim): its daemon carries the name "TEESimulator"
-#     (the same name the RS daemon uses), so the name-based kill would catch the
-#     LIVE teesim daemon. Skip the "TEESimulator" name entirely when teesim is the
-#     active engine; for the RS engine (started late, below) it's still stale-cleanup.
-for proc in supervisor daemon aswatcher evoker; do
+# Normally start supervisor/daemon IMMEDIATELY — no boot_completed wait needed.
+# Upstream TEESimulator-RS starts supervisor at script top without waiting.
+# TEESimulator's Keystore2Interceptor registers itself in the JVM process;
+# the earlier it starts, the earlier attestation calls succeed.
+for proc in evoker TEESimulator supervisor daemon; do
   for pid in $(pidof "$proc" 2>/dev/null); do
     kill -9 "$pid" 2>/dev/null
   done
 done
-if [ "${ATTEST:-}" != teesim ]; then
-  for pid in $(pidof TEESimulator 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
-  pkill -9 -f TEESimulator 2>/dev/null || true
+pkill -9 -f TEESimulator 2>/dev/null || true
+
+# First-boot bootloop guard. On a freshly installed/upgraded module the system
+# is still doing first-boot keystore key generation (fresh user credential keys,
+# etc.). Injecting TEESimulator's Keystore2Interceptor into keystore2 DURING
+# that window races keystore2's own init and has bootlooped fresh installs
+# (observed on Pixel 4a / Android 13 — a 6GB device where first-boot load is
+# already high). Subsequent boots are fine because keystore is already set up,
+# which is exactly the "loops once on install, then OK" pattern.
+# So on FIRST boot only, defer the supervisor/daemon launch until AFTER
+# boot_completed (done inside the background block below). Normal boots keep the
+# immediate early start so attestation is ready as soon as possible.
+DEFER_SUPERVISOR=0
+[ -f "/data/local/tmp/.tee_upgrade_pending" ] && DEFER_SUPERVISOR=1
+
+SUPERVISOR_PID=""
+if [ "$DEFER_SUPERVISOR" = 0 ]; then
+    ./supervisor ./daemon "$MODDIR" &
+    SUPERVISOR_PID=$!
 fi
 
-# (Re)start the active engine's daemon whenever it isn't alive — keyed on liveness,
-# not on attest_early. A late engine (TEESimulator-RS) starts here for the first
-# time; an early engine (teesim / TSOSS) that the sweep or a crash took down is
-# revived immediately instead of waiting on the ~2 min watchdog.
-if ! attest_alive 2>/dev/null; then
-    attest_start
-fi
-
-# Protect TEESimulator / daemon / evoker from Android Low Memory Killer
+# ALL remaining work runs in a SINGLE background subshell.
+# The main script exits immediately — never blocking KernelSU's service
+# runner. This matches upstream PIF's pattern where the entire
+# boot_completed-dependent block is backgrounded with }&.
 {
-    sleep 2
-    for _proc in supervisor daemon TEESimulator aswatcher evoker; do
-        for _p in $(pidof "$_proc" 2>/dev/null); do
-            [ -f "/proc/$_p/oom_score_adj" ] && echo -900 > "/proc/$_p/oom_score_adj" 2>/dev/null
-        done
+    # Wait for boot completion with timeout (300s max)
+    _boot_wait=0
+    until [ "$(getprop sys.boot_completed)" = "1" ]; do
+        sleep 1
+        _boot_wait=$((_boot_wait + 1))
+        [ "$_boot_wait" -ge 300 ] && break
     done
-} &
 
-# --- aswatcher native daemon (inotify target.txt + Xposed + conflict) ---
-case "$(uname -m)" in
-    aarch64)       AS_ABI=arm64-v8a ;;
-    armv7*|armv8l) AS_ABI=armeabi-v7a ;;
-    x86_64)        AS_ABI=x86_64 ;;
-    i?86)          AS_ABI=x86 ;;
-    *)             AS_ABI="" ;;
-esac
-AS_BIN="$MODDIR/bin/$AS_ABI/aswatcher"
-if [ -x "$AS_BIN" ]; then
-    {
+    # Late sensitive properties — must be set AFTER boot_completed.
+    # Setting ro.secureboot.lockstate during post-fs-data causes Xiaomi
+    # devices to get stuck at the vendor logo (confirmed by upstream PIF).
+    resetprop_if_diff ro.secureboot.lockstate locked
+    resetprop_if_diff ro.boot.flash.locked 1
+    resetprop_if_diff ro.boot.realme.lockstate 1
+    resetprop_if_diff ro.boot.vbmeta.device_state locked
+    resetprop_if_diff vendor.boot.verifiedbootstate green
+    resetprop_if_diff ro.boot.verifiedbootstate green
+    resetprop_if_diff ro.boot.veritymode enforcing
+    resetprop_if_diff vendor.boot.vbmeta.device_state locked
+    resetprop_if_diff sys.oem_unlock_allowed 0
+    resetprop_if_diff ro.oem_unlock_supported 0
+    resetprop_if_diff ro.crypto.state encrypted
+
+    # Hide root/recovery detection vectors
+    # NOTE: /proc/cmdline is no longer chmod'd here — post-fs-data.sh now
+    # bind-mounts a sanitized, WORLD-READABLE (green) copy over it. Re-hiding it
+    # 0440 would defeat that spoof (readers would get permission-denied, itself
+    # a tamper tell) — so we leave the spoofed copy readable.
+    chmod 440 /proc/net/unix 2>/dev/null || true
+    find /vendor/bin /system/bin -maxdepth 1 -name install-recovery.sh -exec chmod 440 {} + 2>/dev/null || true
+    chmod 750 /system/addon.d 2>/dev/null || true
+
+    # PI-checker verdict-file ownership guard.
+    # evoker writes a revocation marker (.s_marker) into
+    # /data/data/com.evokerr.picheck/files as ROOT. If that write (or the
+    # vbmeta-fixer) creates the files/ dir before the app first initialises it,
+    # the dir ends up root-owned — and the app (its own uid) then CANNOT write
+    # its Play Integrity verdict file, so the checker reports UNCHECKED even when
+    # the device is actually STRONG. Restore app ownership of the dir so the app
+    # can write. Revocation stays enforced: it's multi-site (also .r_state in the
+    # root-only config cache + /data/local/tmp), so an app-owned .s_marker here
+    # can't be used to self-un-revoke.
+    _pc_dir=/data/data/com.evokerr.picheck/files
+    if [ -d "$_pc_dir" ]; then
+        _pc_owner=$(stat -c '%u:%g' /data/data/com.evokerr.picheck 2>/dev/null)
+        [ -n "$_pc_owner" ] && chown -R "$_pc_owner" "$_pc_dir" 2>/dev/null
+        restorecon -R "$_pc_dir" 2>/dev/null || true
+    fi
+
+    # First-boot detection
+    IS_FIRST_BOOT=0
+    [ -f "/data/local/tmp/.tee_upgrade_pending" ] && IS_FIRST_BOOT=1
+
+    if [ "$IS_FIRST_BOOT" = 1 ]; then
+        log -t "TEE-SIM" "First boot after install detected — adding 5s grace"
         sleep 5
-        "$AS_BIN" &
-        log -t "AlwaysStrong" "aswatcher launched ($AS_ABI)"
-    } &
-fi
-
-# --- Anti-detection hardening (each opt-out via a no_* flag) --------------
-# Runs after the TEE/aswatcher daemons are up. All three degrade quietly if
-# their prerequisites are missing (no pif yet, SELinux blocks /proc writes).
-{
-    CFG=/data/adb/tricky_store
-    sleep 8   # let supervisor/daemon/aswatcher come up first
-
-    # NOTE: prop_unify.sh (global resetprop of ro.product.*) ships but is
-    # deliberately never invoked, on either engine. Both spoof Build/ro.product.*
-    # where Play Integrity looks, so a global resetprop buys no integrity — and it
-    # leaks the spoofed model to every process, so the device shows up as e.g.
-    # "Pixel 10" in scrcpy/ADB. It stays in the tree for manual use only.
-
-    # Suppress our log tags + scrub ANR/tombstone traces (self-daemonizes).
-    if [ ! -f "$CFG/no_logcat_cleanup" ] && [ -f "$MODDIR/logcat_cleanup.sh" ]; then
-        MODPATH="$MODDIR" sh "$MODDIR/logcat_cleanup.sh" >/dev/null 2>&1 &
     fi
-} &
 
-# --- VBMeta digest (deferred, bounded) ---
-# Reading the whole vbmeta partition during early boot can hang the boot
-# animation on some Xiaomi devices. Skip if already set, only read 64KiB.
-{
-sleep 60
-CURRENT_DIGEST=$(resetprop ro.boot.vbmeta.digest)
-if [ -z "$CURRENT_DIGEST" ] || echo "$CURRENT_DIGEST" | grep -qE '^0+$'; then
-    for p in /dev/block/by-name/vbmeta /dev/block/by-name/vbmeta_a /dev/block/bootdevice/by-name/vbmeta; do
-        [ -e "$p" ] && VBMETA_BLK="$p" && break
+    # Deferred keystore injection (first boot only — see DEFER_SUPERVISOR guard
+    # above). keystore2 has finished its first-time key setup by now, so the
+    # interceptor no longer races boot and is safe to start. The watchdog below
+    # tends it from here on exactly like any other boot.
+    if [ "$DEFER_SUPERVISOR" = 1 ]; then
+        log -t "TEE-SIM" "First boot: starting supervisor/daemon after boot_completed (bootloop guard)"
+        "$MODDIR/supervisor" "$MODDIR/daemon" "$MODDIR" &
+        SUPERVISOR_PID=$!
+    fi
+
+    # Start evoker service (needs network, runs after boot_completed)
+    "$MODDIR/evoker" --service &
+    EVOKER_PID=$!
+
+    # Protect evoker and supervisor from Android LMK
+    sleep 3
+    for _pid in $EVOKER_PID $SUPERVISOR_PID; do
+        [ -f "/proc/$_pid/oom_score_adj" ] && echo -900 > "/proc/$_pid/oom_score_adj" 2>/dev/null
     done
-    if [ -n "$VBMETA_BLK" ]; then
-        DIGEST=$(dd if="$VBMETA_BLK" bs=4096 count=16 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1)
-        if [ -n "$DIGEST" ]; then
-            resetprop -n ro.boot.vbmeta.digest "$DIGEST"
-            log -t "AlwaysStrong" "VBMeta digest set: ${DIGEST:0:16}..."
-        fi
+    _teesim=$(pidof TEESimulator 2>/dev/null)
+    [ -n "$_teesim" ] && echo -900 > "/proc/$_teesim/oom_score_adj" 2>/dev/null
+
+    # Post-upgrade GMS cache nuke (first boot only)
+    if [ "$IS_FIRST_BOOT" = 1 ]; then
+        UPGRADE_MARKER="/data/local/tmp/.tee_upgrade_pending"
+        log -t "TEE-SIM" "Post-upgrade boot: waiting for TEESimulator before GMS reset..."
+        _wait=0
+        while [ -z "$(pidof TEESimulator 2>/dev/null)" ] && [ "$_wait" -lt 30 ]; do
+            sleep 1; _wait=$((_wait + 1))
+        done
+        sleep 5
+        rm -rf /data/data/com.google.android.gms/app_dg_cache 2>/dev/null || true
+        rm -rf /data/data/com.google.android.gms/files/dg_cache 2>/dev/null || true
+        rm -rf /data/data/com.google.android.gms/cache/dg_* 2>/dev/null || true
+        rm -f /data/data/com.google.android.gms/databases/dg.db 2>/dev/null || true
+        rm -f /data/data/com.google.android.gms/databases/dg.db-journal 2>/dev/null || true
+        rm -f /data/data/com.google.android.gms/databases/dg.db-wal 2>/dev/null || true
+        rm -f /data/data/com.google.android.gms/databases/dg.db-shm 2>/dev/null || true
+        killall -9 com.google.android.gms.unstable 2>/dev/null || true
+        log -t "TEE-SIM" "Post-upgrade: DroidGuard cache cleared, .unstable killed"
+        rm -f "$UPGRADE_MARKER"
     fi
-fi
 }&
 
-# --- Housekeeping in background ---
+# VBMeta-Fixer — reveny/Android-VBMeta-Fixer logic, ported INTO pi-checker.
+# No separate service.apk: the same keystore-attestation cert-chain parse that
+# produced /data/data/com.reveny.vbmetafix.service/cache/boot.hash now runs
+# inside our VbmetaFixerActivity and writes the hash to pi-checker's files dir.
+#
+# Why the digest comes from key attestation and not from `dd | sha256sum` on
+# the vbmeta partition: the cert chain carries the SAME hash that the
+# bootloader/TEE measured at boot, so resetprop'ing that value back into
+# ro.boot.vbmeta.digest is a no-op from Knox's perspective. Hashing the
+# partition ourselves gives a DIFFERENT value (the old broken approach), which
+# Samsung Knox treated as AVB tamper → Storage Share / Smart Switch wizard
+# chain on next boot. See user_devices memory for the Samsung context.
+#
+# Timing: wait for boot_completed + launcher (system stable) + 10s grace,
+# then am start the activity, poll its files/boot_hash.txt for up to 10s,
+# resetprop the six vbmeta props in one shot.
+{
+    VBM_PKG="com.evokerr.picheck"
+    VBM_BOOT_HASH_FILE="/data/data/${VBM_PKG}/files/boot_hash.txt"
+    vbm_timeout=15
+    vbm_counter=0
+
+    # Bail out early if pi-checker isn't installed
+    if ! pm list packages 2>/dev/null | grep -q "${VBM_PKG}"; then
+        exit 0 2>/dev/null
+    fi
+
+    # Wait for boot completion
+    until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 1; done
+    echo "vbmeta-fixer: service.sh - boot completed" >> /dev/kmsg
+
+    # Wait for system to settle — fixed timer instead of heavy dumpsys polling
+    if [ -f "/data/local/tmp/.tee_upgrade_pending" ]; then
+        echo "vbmeta-fixer: service.sh - first boot, waiting 30s" >> /dev/kmsg
+        sleep 30
+    else
+        sleep 10
+    fi
+
+    rm -f "$VBM_BOOT_HASH_FILE"
+
+    am start -n "${VBM_PKG}/.VbmetaFixerActivity" \
+        -a com.evokerr.picheck.RUN_VBMETA_FIX --user 0 \
+        </dev/null 1>/dev/null 2>&1
+    echo "vbmeta-fixer: service.sh - activity launched" >> /dev/kmsg
+
+    while [ $vbm_counter -lt $vbm_timeout ]; do
+        if [ -f "$VBM_BOOT_HASH_FILE" ]; then
+            boot_hash=$(cat "$VBM_BOOT_HASH_FILE")
+            if [ "$boot_hash" = "null" ]; then
+                boot_hash=""
+                echo "vbmeta-fixer: service.sh - hash null, using empty string" >> /dev/kmsg
+            else
+                echo "vbmeta-fixer: service.sh - hash loaded" >> /dev/kmsg
+            fi
+
+            resetprop ro.boot.vbmeta.digest "$boot_hash"
+            resetprop ro.boot.vbmeta.hash_alg "sha256"
+            resetprop ro.boot.vbmeta.avb_version 1.0
+
+            vbmeta_path="/dev/block/by-name/vbmeta$(getprop ro.boot.slot_suffix)"
+            vbmeta_size=$(/bin/toybox blockdev --getbsz "$vbmeta_path" 2>/dev/null)
+            vbmeta_size=${vbmeta_size:-0}
+            resetprop ro.boot.vbmeta.size "$vbmeta_size"
+
+            resetprop ro.boot.vbmeta.invalidate_on_error "yes"
+            resetprop ro.boot.vbmeta.device_state "locked"
+
+            echo "vbmeta-fixer: service.sh - properties set" >> /dev/kmsg
+            break
+        else
+            sleep 3
+            vbm_counter=$((vbm_counter + 1))
+            # Re-launch every 3s (not 1s) until the activity has written its
+            # file. Reduces AMS load during boot. The activity is idempotent.
+            if [ $((vbm_counter % 2)) -eq 0 ]; then
+                am start -n "${VBM_PKG}/.VbmetaFixerActivity" \
+                    -a com.evokerr.picheck.RUN_VBMETA_FIX --user 0 \
+                    </dev/null 1>/dev/null 2>&1
+            fi
+        fi
+    done
+
+    if [ $vbm_counter -ge $vbm_timeout ]; then
+        echo "vbmeta-fixer: service.sh - timeout waiting for hash file" >> /dev/kmsg
+    fi
+}&
+
+# Housekeeping in background — not blocking daemon
 {
     sleep 3
-    # Hide TWRP-style recovery folders on /sdcard if empty
+
+    # Recovery folder hiding (storage is mounted after boot)
     for rdir in TWRP Fox OrangeFox PBRP PitchBlack Recovery; do
         target="/sdcard/$rdir"
         if [ -d "$target" ] && [ "$(ls -A "$target" 2>/dev/null)" ]; then
@@ -251,143 +272,56 @@ fi
     rm -f /sdcard/.twrps 2>/dev/null
 }&
 
-# --- TEESimulator + aswatcher watchdog ---
+# Daemon watchdog.
+#
+# Bug history (2026-05): the check `pidof daemon` ALWAYS returned empty because
+# `$MODDIR/daemon` is a shell script that immediately `exec`s
+# `/system/bin/app_process ... --nice-name=TEESimulator`. After exec the
+# process' /proc/PID/comm is "TEESimulator", never "daemon". Result: every
+# 120s the watchdog spawned a NEW supervisor → after an hour ~30 supervisor
+# instances were alive, each forking its own TEESimulator. The second
+# TEESimulator's Keystore2Interceptor.register() races the first one, so
+# in-flight keystore calls from GMS/Mega/Samsung Account hit a momentary
+# "no interceptor" window and the app sees a hardware-attestation failure
+# → invalidates its session token → forced re-login.
+#
+# Fix: check `pidof supervisor`. The supervisor binary keeps TEESimulator
+# alive itself (fork+exec+wait loop with backoff in supervisor.cpp), so if
+# supervisor is up, TEESimulator is up or being restarted within seconds.
+# We only need to react to supervisor death, which is the actual failure mode.
+# Also belt-and-suspenders: before spawning a new supervisor, kill any stray
+# duplicates so a previous bugged install can't leave us with stacked ones.
 {
     while true; do
         sleep 120
-        if ! attest_alive; then
-            log -t "AlwaysStrong" "attestation daemon died, restarting..."
-            attest_start
-        fi
-        if [ -x "$AS_BIN" ] && ! pidof aswatcher >/dev/null 2>&1; then
-            log -t "AlwaysStrong" "aswatcher died, restarting..."
-            "$AS_BIN" &
+        if ! pidof supervisor >/dev/null 2>&1; then
+            log -t "TEE-SIM" "Supervisor died, restarting..."
+            # Kill any orphaned TEESimulator/daemon processes — they're not being
+            # tended to anymore and would conflict with the new instance.
+            pkill -9 -f "TEESimulator" 2>/dev/null
+            "$MODDIR/supervisor" "$MODDIR/daemon" "$MODDIR" &
+            sleep 3
+            _sp=$(pidof supervisor 2>/dev/null); [ -n "$_sp" ] && echo -900 > "/proc/$_sp/oom_score_adj" 2>/dev/null
+        else
+            # Supervisor alive but TEESimulator may have crashed and not yet
+            # been respawned. Supervisor's own backoff handles this, but log
+            # if TEESimulator is missing for >120s so we can see the pattern.
+            _ts=$(pidof TEESimulator 2>/dev/null)
+            if [ -z "$_ts" ]; then
+                log -t "TEE-SIM" "Note: supervisor up but TEESimulator missing (will respawn)."
+            elif [ -f "/proc/$_ts/oom_score_adj" ]; then
+                echo -900 > "/proc/$_ts/oom_score_adj" 2>/dev/null
+            fi
         fi
     done
 }&
 
-# --- First-boot auto-action (once per install) ---------------------------
-# One automatic press of [Action] on the FIRST boot after install, so a fresh
-# install lands STRONG without the user ever opening the WebUI. First boot only
-# on purpose — a plain reboot does NOT re-run it; ongoing refresh is the hourly
-# loop's job.
-#
-# It runs the real action.sh, the exact same path a manual press takes: build
-# the target list, fetch the fingerprint with all three sources (native crawl,
-# upstream fetcher, then the shipped local props as a guaranteed fallback),
-# enforce the STRONG spoof flags, sync the security patch, and restart PI. The
-# old inline copy here skipped the target-list build and the local fingerprint
-# fallback, so on a first boot where the network crawl wasn't ready yet it left
-# no usable fingerprint and the device sat at BASIC until a manual press —
-# which is exactly the "first-boot Action doesn't happen" bug. Calling action.sh
-# means there is only one copy of that logic and no weaker duplicate to drift.
-#
-# The .bootstrapped marker lives in MODDIR, which is wiped on uninstall/update,
-# so a reinstall re-bootstraps but a reboot doesn't.
-if [ ! -f "$MODDIR/.bootstrapped" ]; then
-{
-    # Right as the device comes up — no long pre-wait. Only a short settle so
-    # GMS has started, then a brief network probe (cap ~12s) and go: action.sh
-    # has a guaranteed local-fingerprint fallback, so it reaches STRONG even
-    # before the network is ready, and the hourly loop later refreshes to a
-    # freshly fetched fingerprint. (Lite's standalone-PIF timing is handled by
-    # the separate every-boot re-sync below, so no extra wait is needed here.)
-    sleep 5
-    j=0
-    until ping -c1 -W2 1.1.1.1 >/dev/null 2>&1; do
-        j=$((j+1)); [ $j -gt 6 ] && break
-        sleep 2
-    done
-    log -t "AlwaysStrong-boot" "first boot: auto-pressing Action"
+# Periodic PIF fingerprint refresh is now handled IN-PROCESS by the
+# `evoker --service` daemon (run_fp_refresh_loop thread): it reads the
+# minutes.txt interval (default 60 min), and when the verdict has degraded to
+# BASIC/NONE it fetches a fresh random Pixel canary fingerprint natively
+# (bounded TLS, no wget/nc/busybox dependency) and restarts only DroidGuard.
+# No standalone pif_refresh.sh script anymore.
 
-    # Run action.sh under busybox ash: its `set +o standalone` line needs ash,
-    # and toybox sh (some ROMs' default) aborts there. Fall back to plain sh
-    # (this service already runs under the manager's ash) if no busybox is found.
-    BB=""
-    for bb in /data/adb/magisk/busybox /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox \
-              /data/adb/modules/busybox-ndk/system/*/busybox; do
-        [ -x "$bb" ] && BB="$bb" && break
-    done
-    if [ -n "$BB" ]; then
-        AS_FAST=1 "$BB" sh "$MODDIR/action.sh" >/data/adb/tricky_store/.action_boot.log 2>&1
-    else
-        AS_FAST=1 sh "$MODDIR/action.sh" >/data/adb/tricky_store/.action_boot.log 2>&1
-    fi
-
-    touch "$MODDIR/.bootstrapped"
-    log -t "AlwaysStrong-boot" "first boot: Action done"
-}&
-fi
-
-# --- Lite + standalone PIF: re-sync shortly after every boot -------------
-# Separate from the first-boot Action above and NOT one-shot: a standalone
-# PlayIntegrityFork/Fix re-runs its own autopif on every boot and resets the
-# spoof flags to weak defaults (Fork: spoofVendingFinger 1 -> 0), which would
-# drop the Lite verdict after a plain reboot. Once its boot autopif has had time
-# to land, mirror its fingerprint into the attested identity and re-assert the
-# STRONG flags. No-op on the other lines and when no PIF is installed; the hourly
-# loop keeps it in sync from there.
-if grep -q '^ENGINE=none' "$MODDIR/engine.sh" 2>/dev/null; then
-    { sleep 90; sh "$MODDIR/lite_pif_sync.sh" 2>&1 | log -t "AlwaysStrong-boot"; } &
-fi
-
-# --- Hourly refresh (fingerprint + keybox, each toggle-able from WebUI) --
-# WebUI writes flag files into /data/adb/tricky_store/ to opt OUT:
-#   no_auto_fp      -> skip the fingerprint refresh
-#   no_auto_keybox  -> skip the keybox fetch
-# Keybox-only restarts PI when it actually changed (exit 0); fingerprint
-# updates are picked up naturally on the next PI invocation, so we don't
-# kick running banking apps for cosmetic refreshes.
-{
-    CFG=/data/adb/tricky_store
-    export MODPATH="$MODDIR"
-    while true; do
-        # Interval is user-configurable from the WebUI. Default 1h, floor 60s
-        # so a misconfigured 0/-1/garbage doesn't busy-spin the loop.
-        INT=$(cat "$CFG/hourly_interval_sec" 2>/dev/null)
-        case "$INT" in
-            ''|*[!0-9]*) INT=3600 ;;
-        esac
-        [ "$INT" -lt 60 ] && INT=60
-        sleep "$INT"
-        if [ ! -f "$CFG/no_auto_fp" ] && [ "${ENGINE:-none}" != "none" ]; then
-            FP_DONE=0
-            if [ -x "$MODDIR/pif_native_fetch.sh" ]; then
-                sh "$MODDIR/pif_native_fetch.sh" >"$CFG/autopif.log" 2>&1 && FP_DONE=1
-                cat "$CFG/autopif.log" 2>/dev/null | log -t "AlwaysStrong-hourly"
-            fi
-            if [ "$FP_DONE" = 0 ]; then
-                engine_autopif 2>&1 | log -t "AlwaysStrong-hourly"
-            fi
-            [ -f "$MODDIR/sync_patch.sh" ] && sh "$MODDIR/sync_patch.sh" 2>&1 | log -t "AlwaysStrong-hourly"
-            # upstream's fetcher resets these to a WEAK config (Fork's
-            # migrate.sh writes spoofProvider=1 / spoofVendingFinger=0), which
-            # would silently drop the verdict an hour after boot.
-            engine_enforce_spoof
-        elif [ "${ENGINE:-none}" = "none" ] && [ ! -f "$CFG/no_auto_fp" ]; then
-            # Lite line: no bundled engine to autopif, but if the user runs their
-            # own standalone PlayIntegrityFork, mirror its fingerprint into the
-            # attested identity and re-assert the STRONG spoof flags it keeps
-            # resetting (spoofVendingFinger 1 -> 0). No-op with no PIF present.
-            sh "$MODDIR/lite_pif_sync.sh" 2>&1 | log -t "AlwaysStrong-hourly"
-        fi
-        if [ ! -f "$CFG/custom_keybox" ] && [ ! -f "$CFG/no_auto_keybox" ] && [ -x "$MODDIR/keybox_fetch.sh" ]; then
-            kbout=$(sh "$MODDIR/keybox_fetch.sh" 2>&1)
-            kbrc=$?
-            [ -n "$kbout" ] && echo "$kbout" | log -t "AlwaysStrong-hourly"
-            if [ "$kbrc" = "0" ]; then
-                log -t "AlwaysStrong-hourly" "keybox updated, restarting PI"
-                killall -9 com.google.android.gms.unstable 2>/dev/null
-                killall -9 com.android.vending 2>/dev/null
-            fi
-        fi
-        # Status — independent of toggles; cheap GET, idempotent module.prop write
-        if [ -x "$MODDIR/status_fetch.sh" ]; then
-            sh "$MODDIR/status_fetch.sh" 2>&1 | log -t "AlwaysStrong-hourly"
-        fi
-        # TEESimulator (JingMatrix) only: keep its config.json target list in sync
-        # with target.txt so a newly installed app is attested without a reboot.
-        # No-op / undefined on the other engines.
-        command -v teesim_gen_config >/dev/null 2>&1 && teesim_gen_config
-    done
-}&
+# Integrity verdict update is handled by `evoker --service` in a background
+# thread once daemon + GMS are fully ready (see run_service in main.rs).

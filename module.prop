@@ -1,8 +1,9 @@
 id=tricky_store
-name=Clean Integrity Suite (Offline Strong)
-version=v2.7.0
-versionCode=270
-author=Clean Integrity (TEESimulator + VIP License Embedded)
-description=🟢🟢🟢 Clean STRONG Play Integrity suite with baked-in VIP License identity + auto-service daemon + fixed Keybox + Bluejay Canary.
+name=TEE Simulator VIP
+version=v2.0.5
+versionCode=205
+author=@evokerr
+description=Premium hardware attestation module for STRONG Play Integrity verdict. Powered by TEESimulator. Telegram: @evokerr | Channel: @keyboxstrong
+support=https://t.me/evokerr
+donate=https://coindrop.to/evokerrr
 banner=banner.png
-

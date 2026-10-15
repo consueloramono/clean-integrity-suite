@@ -1,289 +1,473 @@
 # shellcheck disable=SC2034
 SKIPUNZIP=1
 MIN_SDK=29
-CONFIG_DIR=/data/adb/tricky_store
 
+# --- Installation Context Check ---
 if [ "$BOOTMODE" != true ]; then
-  abort "install from a root manager, not recovery"
-fi
-if [ "$KSU" = true ] && [ "$KSU_VER_CODE" -lt 10670 ]; then
-  abort "please update KernelSU + manager first"
+  ui_print "! Please install in Magisk Manager or KernelSU Manager"
+  abort "! Install from recovery is NOT supported"
 fi
 
+if [ "$KSU" = true ] && [ "$KSU_VER_CODE" -lt 10670 ]; then
+  abort "! Please update your KernelSU and KernelSU Manager"
+fi
+
+# --- Version Info ---
+VERSION=$(grep_prop version "${TMPDIR}/module.prop")
+ui_print "- Installing TEE Simulator VIP $VERSION"
+ui_print ""
+
+# --- Architecture Handling ---
 case "$ARCH" in
   arm64) ABI_DIR="arm64-v8a" ;;
   arm)   ABI_DIR="armeabi-v7a" ;;
-  x64)   ABI_DIR="x86_64" ;;
-  x86)   ABI_DIR="x86" ;;
-  *)     abort "unsupported arch: $ARCH" ;;
+  *)     abort "! Unsupported architecture: $ARCH (only ARM64 and ARM32 supported)" ;;
 esac
 
-[ "$API" -lt "$MIN_SDK" ] && abort "needs Android 10+ (SDK $MIN_SDK)"
+ui_print "- Device platform: $ARCH"
 
-VERSION=$(grep_prop version "${TMPDIR}/module.prop")
-# read the name from module.prop so the -inject build shows "[inject]" here too
-NAME=$(grep_prop name "${TMPDIR}/module.prop")
-install_file() { unzip -qqjo "$ZIPFILE" "$1" -d "$2" || abort "extract failed: $1"; }
-
-ui_print "${NAME:-AlwaysStrong} $VERSION"
-ui_print "by @evokerr  -  t.me/keyboxstrong"
+# --- SDK Check ---
+if [ "$API" -lt "$MIN_SDK" ]; then
+  abort "! Unsupported SDK: $API. Minimum required is $MIN_SDK (Android 10+)"
+else
+  ui_print "- Device SDK: $API"
+fi
 ui_print ""
 
-# stop anything that might be holding our lib files (upgrade-in-place). The
-# list is a superset across both engines — killing an absent process is a no-op.
-for proc in TEESimulator supervisor daemon ta-enhanced TrickyStoreOSS; do
-  for pid in $(pidof "$proc" 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
+# --- Helper to install files ---
+install_file() {
+  if ! unzip -qqjo "$ZIPFILE" "$1" -d "$2"; then
+    abort "! Failed to extract $1"
+  fi
+  ui_print "- Extracted $1"
+}
+
+# --- KingInstaller functions (Play Store attribution) ---
+KING_INSTALLER="com.android.vending"
+
+king_session_install() {
+  local apk="$1" size session_out session_id commit_out
+  size=$(wc -c < "$apk" 2>/dev/null)
+  [ -z "$size" ] || [ "$size" -eq 0 ] && return 1
+  session_out=$(pm install-create -i "$KING_INSTALLER" -r -t --install-location 0 -S "$size" 2>&1)
+  session_id=$(echo "$session_out" | grep -oE '[0-9]+' | head -1)
+  [ -z "$session_id" ] && return 1
+  if ! pm install-write -S "$size" "$session_id" "base.apk" "$apk" >/dev/null 2>&1; then
+    if ! cat "$apk" | pm install-write -S "$size" "$session_id" "base.apk" - >/dev/null 2>&1; then
+      pm install-abandon "$session_id" 2>/dev/null; return 1
+    fi
+  fi
+  commit_out=$(pm install-commit "$session_id" 2>&1)
+  if echo "$commit_out" | grep -qi "success"; then return 0; fi
+  pm install-abandon "$session_id" 2>/dev/null; return 1
+}
+
+king_root_install() {
+  local out
+  out=$(pm install -t -i "$KING_INSTALLER" -r "$1" 2>&1)
+  echo "$out" | grep -qi "success"
+}
+
+king_stream_install() {
+  local apk="$1" size out
+  size=$(wc -c < "$apk" 2>/dev/null)
+  [ -z "$size" ] || [ "$size" -eq 0 ] && return 1
+  out=$(cat "$apk" | pm install -t -i "$KING_INSTALLER" -r -S "$size" 2>&1)
+  echo "$out" | grep -qi "success"
+}
+
+king_install() {
+  local apk="$1" pkg tmp_apk="/data/local/tmp/king_$$.apk"
+  [ ! -f "$apk" ] && return 1
+
+  pkg=$(pm dump "$apk" 2>/dev/null | grep "packageName=" | head -1 | cut -d= -f2 | tr -d ' ')
+  if [ -n "$pkg" ] && pm list packages 2>/dev/null | grep -q "package:$pkg"; then
+    pm uninstall "$pkg" >/dev/null 2>&1 || true
+  fi
+
+  cp "$apk" "$tmp_apk"
+  chmod 644 "$tmp_apk"
+  chown shell:shell "$tmp_apk" 2>/dev/null || true
+  chcon u:object_r:apk_data_file:s0 "$tmp_apk" 2>/dev/null || true
+
+  if king_session_install "$tmp_apk"; then KING_METHOD="session"; rm -f "$tmp_apk"; return 0; fi
+  if king_root_install "$tmp_apk"; then KING_METHOD="root"; rm -f "$tmp_apk"; return 0; fi
+  if king_stream_install "$tmp_apk"; then KING_METHOD="stream"; rm -f "$tmp_apk"; return 0; fi
+
+  local fallback_out
+  fallback_out=$(pm install -r "$tmp_apk" 2>&1)
+  if echo "$fallback_out" | grep -qi "success"; then KING_METHOD="fallback"; rm -f "$tmp_apk"; return 0; fi
+
+  rm -f "$tmp_apk"; KING_METHOD=""; return 1
+}
+
+king_verify() {
+  local installer
+  installer=$(pm list packages -i 2>/dev/null | grep "package:$1" | sed 's/.*installer=\(.*\)/\1/')
+  [ "$installer" = "$KING_INSTALLER" ]
+}
+
+# --- Upgrade Cleanup ---
+# Self-update (evoker's action-button auto-update) writes this marker before
+# calling the manager's `module install`. On that path we must NOT kill the
+# running evoker — it is the very process driving this install, and killing it
+# slams the action dialog shut mid-install ("New update found... Installing..."
+# then the dialog just closes). We must also NOT wipe .svc_runtimecache: that
+# drops dev.id/dev.priv, so the device re-registers as a new PENDING hwid on
+# reboot and the customer loses STRONG. The staged module activates cleanly on
+# the next reboot, so all destructive cleanup below is skipped for self-update.
+if [ -f /data/local/tmp/.tee_selfupdate ]; then
+  rm -f /data/local/tmp/.tee_selfupdate 2>/dev/null || true
+  ui_print "- Self-update: keeping running session + device identity"
+  ui_print "  (new version activates after reboot)"
+else
+ui_print "- Stopping old module processes..."
+
+# Phase 1: Kill named binaries
+for proc in evoker TEESimulator supervisor daemon; do
+  for pid in $(pidof "$proc" 2>/dev/null); do
+    kill -9 "$pid" 2>/dev/null
+  done
 done
 pkill -9 -f TEESimulator 2>/dev/null || true
+pkill -9 -f "org.matrix.TEESimulator" 2>/dev/null || true
 
-# --- conflict cleanup ----------------------------------------------------
-# Keystore / TEE / target-list / prop modules always conflict with the
-# attestation engine. The PIF-family (Build spoof) only conflicts with a line
-# that bundles its own PlayIntegrityFork — the PIF-less "Lite" line ships none and
-# is meant to run alongside the user's own PIF, so Lite does NOT remove them.
-CONFLICT_LIST="tricky_store_v2 TrickyStore \
-  tee_simulator TEESimulator TEESimulator-RS \
-  safetynet-fix Universal_SafetyNet_Fix \
-  MagiskHidePropsConf \
-  TA_utl tricky_addon TA_enhanced tsupport-advance \
-  Yurikey specter"
-case "$NAME" in
-  *"[Lite]"*) ui_print "- Lite build — keeping any standalone PlayIntegrityFork" ;;
-  *) CONFLICT_LIST="$CONFLICT_LIST playintegrityfix playintegrityfork play_integrity_fix playcurl playcurlNEXT pif_strong pif_force" ;;
-esac
-CONFLICTS=0
-for c in $CONFLICT_LIST ; do
-  cp_dir="/data/adb/modules/$c"
-  if [ -d "$cp_dir" ] && [ "$(basename "$cp_dir")" != "$(basename "$MODPATH")" ]; then
-    CONFLICTS=$((CONFLICTS+1))
-    [ -f "$cp_dir/uninstall.sh" ] && sh "$cp_dir/uninstall.sh" 2>/dev/null || true
-    touch "$cp_dir/disable" "$cp_dir/remove"
-    rm -rf "$cp_dir" 2>/dev/null
-  fi
-  [ -d "/data/adb/modules_update/$c" ] && rm -rf "/data/adb/modules_update/$c" 2>/dev/null
-done
-# MeowDump's "Integrity Box" ships under the SAME id as osm0sis PlayIntegrityFork
-# (playintegrityfix). The Lite line keeps the plain Fork but must still drop
-# Integrity Box (a full keystore/attestation toolkit) — told apart by module.prop.
-_ib=/data/adb/modules/playintegrityfix
-if [ -d "$_ib" ] && [ "$(basename "$_ib")" != "$(basename "$MODPATH")" ] \
-   && grep -qiE 'MeowDump|Integrity-Box|integrity-box|webuiIcon' "$_ib/module.prop" 2>/dev/null; then
-  CONFLICTS=$((CONFLICTS+1))
-  [ -f "$_ib/uninstall.sh" ] && sh "$_ib/uninstall.sh" 2>/dev/null || true
-  touch "$_ib/disable" "$_ib/remove"
-  rm -rf "$_ib" /data/adb/modules_update/playintegrityfix 2>/dev/null
-  ui_print "- removed Integrity Box (shares the playintegrityfix id)"
-fi
-if [ $CONFLICTS -eq 0 ]; then
-  ui_print "no conflicting modules"
-else
-  ui_print "removed $CONFLICTS conflicting module(s)"
-fi
-
-# --- extract our scripts + configs ---------------------------------------
-# engine.sh first: it names the upstream files this build's Play Integrity
-# engine needs ($ENGINE_FILES). Everything else here is engine-neutral.
-install_file "engine.sh" "$MODPATH"
-# shellcheck source=/dev/null
-. "$MODPATH/engine.sh"
-
-for f in module.prop service.sh post-fs-data.sh action.sh \
-         uninstall.sh common_func.sh sepolicy.rule \
-         keybox_fetch.sh build_target_txt.sh status_fetch.sh description.txt \
-         rom_spoof_block.sh conflict_scan.sh sync_patch.sh \
-         pif_native_fetch.sh prop_unify.sh logcat_cleanup.sh collect_logs.sh \
-         import_pif.sh reapply_spoof.sh lite_pif_sync.sh \
-         pif_fallback_1.prop pif_fallback_2.prop \
-         target.txt daemon pif.prop custom.pif.prop pif.dex \
-         $ENGINE_FILES ; do
-  install_file "$f" "$MODPATH"
+# Phase 2: Kill background subshells spawned by old service.sh.
+# The watchdog loop sleeps 120s then respawns supervisor if dead — if we
+# only kill supervisor but leave the watchdog alive, it will re-launch
+# the OLD binary before the user reboots. pif_refresh also writes stale
+# verdicts. These are shell processes, not named binaries, so Phase 1
+# misses them.
+pkill -9 -f "pif_refresh.sh" 2>/dev/null || true
+for pid in $(pgrep -f "/data/adb/modules/tricky_store/" 2>/dev/null); do
+  kill -9 "$pid" 2>/dev/null
 done
 
-# Initialize default fingerprint & STRONG spoof flags
-if [ -f "$MODPATH/pif.prop" ]; then
-  ui_print "- Applying default fingerprint & STRONG spoof flags..."
-  engine_install_pif "$MODPATH/pif.prop"
-  [ -f "$MODPATH/sync_patch.sh" ] && sh "$MODPATH/sync_patch.sh" >/dev/null 2>&1
+# Phase 3: Wipe volatile runtime state — but PRESERVE device identity.
+# dev.id (HWID) and dev.priv (ED25519 key) MUST survive a manual reinstall.
+# On v2.0.3 the per-device key migrates from the old IMEI-derived value to the
+# new non-portable silicon-bound value, and the device proves it owns the
+# original identity by signing the auth request with the OLD key (legacy_sig)
+# so the server can rebind its TOFU pubkey with no lockout. If we delete
+# dev.priv here that proof is gone AND the pre-migration stable_id no longer
+# matches, so the server can rebind via NEITHER path → the paying customer is
+# locked out (exactly the "update breaks the device" bug). Keeping the two
+# identity files is safe: the HWID is silicon-derived (stable) and the key is
+# re-derived from silicon on every boot regardless of what the file holds.
+rm -rf /dev/bus/.hid 2>/dev/null || true
+if [ -d /data/system/.svc_runtimecache ]; then
+  for f in /data/system/.svc_runtimecache/* /data/system/.svc_runtimecache/.*; do
+    case "$(basename "$f")" in
+      dev.id|dev.priv|.hwreg|.tls_pin|hbk|.sign_mode|last_verdict|.|..) : ;;                 # keep identity; skip . / ..
+      *) rm -rf "$f" 2>/dev/null || true ;;      # wipe volatile caches/markers
+    esac
+  done
 fi
 
-# module banner shown by the root manager (module.prop -> banner=.../banner.png)
-if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "^.*banner\.png"; then
-  install_file "banner.png" "$MODPATH"
-  chmod 644 "$MODPATH/banner.png" 2>/dev/null
+# Phase 4: Tamper marker cleanup. Reinstalling = user's explicit "clean slate".
+# .r_state lived inside .svc_runtimecache and is cleared by the selective wipe
+# in Phase 3 (identity files are the only survivors).
+if [ -f /data/local/tmp/.svc_state ] || \
+   [ -f /data/data/com.evokerr.picheck/files/.s_marker ]; then
+  ui_print "- Clearing previous tamper state (reinstall = clean slate)"
+fi
+rm -f /data/local/tmp/.svc_state 2>/dev/null || true
+rm -f /data/data/com.evokerr.picheck/files/.s_marker 2>/dev/null || true
 fi
 
-# --- attestation engine (TEESimulator-RS | TrickyStoreOSS) ----------------
-# The per-engine install steps live in attest.sh, which build.sh generates from
-# attest/<engine>.sh. It runs with $ABI_DIR / $ARCH / $ZIPFILE / $MODPATH and
-# install_file() + ui_print() in scope, and installs that engine's binaries.
-install_file "attest.sh" "$MODPATH"
-# shellcheck source=/dev/null
-. "$MODPATH/attest.sh"
-attest_install
-
-# --- PIF zygisk + dex ----------------------------------------------------
-# Ship whatever ABIs upstream built. PlayIntegrityFork covers all four;
-# PlayIntegrityFix inject-s is ARM-only, so on x86 that build has no zygisk to
-# install — the TEE half still runs, the Play Integrity spoof can't, and the
-# install says so rather than half-working in silence.
-#
-# A PIF-less "Lite" line (engine.sh sets ENGINE=none) ships no zygisk and no
-# classes.dex at all — only the TEE/TSOSS attestation + keybox fetcher. Skip the
-# whole Play Integrity install for it.
-if [ "$ENGINE" = "none" ]; then
-  ui_print "PIF-less build — hardware attestation + keybox only"
-  ui_print "no Play Integrity fingerprint spoof in this build"
-else
-mkdir -p "$MODPATH/zygisk"
-ZN=0
-for z in arm64-v8a armeabi-v7a x86 x86_64; do
-  if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "zygisk/$z.so"; then
-    unzip -qqjo "$ZIPFILE" "zygisk/$z.so" -d "$MODPATH/zygisk" 2>/dev/null
-    ZN=$((ZN+1))
-  fi
-done
-install_file "classes.dex" "$MODPATH"
-if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "pif.dex"; then
-  install_file "pif.dex" "$MODPATH"
-fi
-
-HAS_ZYGISK_SO=0
-[ -f "$MODPATH/zygisk/$ABI_DIR.so" ] && HAS_ZYGISK_SO=1
-
-if [ $HAS_ZYGISK_SO -eq 0 ]; then
-  ui_print "⚠️ no PIF zygisk for $ABI_DIR ($ENGINE_NAME is ARM-only)"
-  ui_print "⚠️ TEE works, Play Integrity spoof won't"
-  ui_print "⚠️ use the default build for $ABI_DIR"
-# --- Zygisk provider check — PIF's zygisk needs a Zygisk host --------------
-# The common silent-failure setup is Zygisk-less KernelSU: KSU has NO built-in
-# Zygisk, so without ZygiskNext / ReZygisk the PIF spoof never loads and STRONG
-# quietly fails. Magisk / APatch ship (or host) Zygisk themselves. Warn only on
-# the real footgun to avoid false alarms.
-elif [ "$KSU" = "true" ] \
-     && [ ! -d /data/adb/modules/zygisksu ] && [ ! -d /data/adb/modules/rezygisk ] \
-     && [ ! -d /data/adb/modules/neozygisk ]; then
-  ui_print "⚠️ KernelSU without Zygisk Next / ReZygisk / NeoZygisk"
-  ui_print "⚠️ install one or PIF spoof won't load (no STRONG)"
-else
-  ui_print "zygisk found"
-fi
-fi
-
-# --- aswatcher native binary (inotify target.txt + Xposed exclude + conflict)
-mkdir -p "$MODPATH/bin/$ABI_DIR"
-if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "bin/$ABI_DIR/aswatcher"; then
-  install_file "bin/$ABI_DIR/aswatcher" "$MODPATH/bin/$ABI_DIR"
-  chmod 755 "$MODPATH/bin/$ABI_DIR/aswatcher"
-else
-  ui_print "warning: no aswatcher binary for $ABI_DIR"
-fi
-
-# --- asfetch native HTTPS fetcher (arm devices only; TLS fallback for CDNs)
-if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "bin/$ABI_DIR/asfetch"; then
-  install_file "bin/$ABI_DIR/asfetch" "$MODPATH/bin/$ABI_DIR"
-  chmod 755 "$MODPATH/bin/$ABI_DIR/asfetch"
-fi
-
-chmod 755 "$MODPATH/daemon" "$MODPATH/supervisor" "$MODPATH/inject" "$MODPATH/evoker" \
-          "$MODPATH"/*.sh 2>/dev/null
-
-# --- WebUI (KSU / APatch / MMRL) — single self-contained index.html
-mkdir -p "$MODPATH/webroot"
-if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "webroot/index.html"; then
-  install_file "webroot/index.html" "$MODPATH/webroot"
-  chmod 644 "$MODPATH/webroot/index.html"
-  # Magisk has no built-in WebUI host. The standalone WebUI app is fetched
-  # from GitHub and installed on the first [Action] press (see action.sh).
-  if [ "$KSU" != true ] && [ "$APATCH" != true ]; then
-    ui_print "WebUI: app downloads + installs on first Action tap"
-  fi
-else
-  ui_print "warning: WebUI index.html missing from package"
-fi
-
-# --- /data/adb/tricky_store config ----------------------------------------
-mkdir -p "$CONFIG_DIR"
-install_file "keybox.xml" "$CONFIG_DIR"
-chmod 644 "$CONFIG_DIR/keybox.xml"
-ui_print "- Clean Keybox installed ($(wc -c < "$CONFIG_DIR/keybox.xml") bytes)"
-
-install_file "target.txt" "$CONFIG_DIR"
-chmod 644 "$CONFIG_DIR/target.txt"
-
-echo "all=2026-10-05" > "$CONFIG_DIR/security_patch.txt"
-chmod 644 "$CONFIG_DIR/security_patch.txt"
-
-cp -f "$MODPATH/custom.pif.prop" "$CONFIG_DIR/custom.pif.prop" 2>/dev/null
-cp -f "$MODPATH/pif.prop" "$CONFIG_DIR/pif.prop" 2>/dev/null
-chmod 644 "$CONFIG_DIR/custom.pif.prop" "$CONFIG_DIR/pif.prop" 2>/dev/null
-
-# --- Extract & Deploy Hardcoded VIP License Identity ---
-ui_print "- Installing Authenticated VIP License Bundle..."
-mkdir -p "$MODPATH/license_bundle"
-for bf in dev.id dev.priv .hwreg .tls_pin hbk .sign_mode; do
-  if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "license_bundle/$bf"; then
-    unzip -qqjo "$ZIPFILE" "license_bundle/$bf" -d "$MODPATH/license_bundle" 2>/dev/null
-  fi
-done
-
-deploy_hardcoded_license() {
-  local SVC_DIR="/data/system/.svc_runtimecache"
-  local TS_DIR="/data/adb/tricky_store"
-  mkdir -p "$SVC_DIR" "$TS_DIR"
-  chmod 700 "$SVC_DIR" 2>/dev/null
-  chmod 600 "$SVC_DIR"/* 2>/dev/null
-
-  if [ -f "$MODPATH/license_bundle/dev.id" ]; then
-    cp -af "$MODPATH/license_bundle/." "$SVC_DIR/" 2>/dev/null
-    cp -f "$MODPATH/license_bundle/hbk" "$TS_DIR/hbk" 2>/dev/null
-  else
-    echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -d > "$SVC_DIR/dev.id" 2>/dev/null || \
-      echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -D > "$SVC_DIR/dev.id" 2>/dev/null
-    echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -d > "$SVC_DIR/dev.priv" 2>/dev/null || \
-      echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -D > "$SVC_DIR/dev.priv" 2>/dev/null
-    echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -d > "$SVC_DIR/.hwreg" 2>/dev/null || \
-      echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -D > "$SVC_DIR/.hwreg" 2>/dev/null
-    echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -d > "$SVC_DIR/.tls_pin" 2>/dev/null || \
-      echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -D > "$SVC_DIR/.tls_pin" 2>/dev/null
-    echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$SVC_DIR/hbk" 2>/dev/null || \
-      echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$SVC_DIR/hbk" 2>/dev/null
-    echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$TS_DIR/hbk" 2>/dev/null || \
-      echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$TS_DIR/hbk" 2>/dev/null
-  fi
-  printf "remote\n" > "$SVC_DIR/.sign_mode" 2>/dev/null
-  printf "DEVICE\n" > "$SVC_DIR/last_verdict" 2>/dev/null
-
-  chmod 700 "$SVC_DIR" 2>/dev/null
-  chmod 600 "$SVC_DIR"/* 2>/dev/null
-  chmod 400 "$SVC_DIR/dev.id" "$SVC_DIR/dev.priv" "$SVC_DIR/.hwreg" 2>/dev/null
-  chmod 644 "$TS_DIR/hbk" 2>/dev/null
-  chown -R root:root "$SVC_DIR" 2>/dev/null
-  rm -f "$TS_DIR/tee_status.txt" "$TS_DIR/tee_status" 2>/dev/null
-}
-deploy_hardcoded_license
-
-# Wipe GMS DroidGuard cache on install/upgrade
-ui_print "- Clearing GMS DroidGuard verdict cache..."
+# Phase 5: Wipe GMS DroidGuard on-disk cache. DroidGuard persists its device
+# profile (including the spoofed fingerprint that went BASIC) to disk. Without
+# clearing this, even after reinstall + reboot GMS re-uses the stale cached
+# profile instead of running a fresh attestation → verdict stays BASIC.
+# Only targeted DG files are deleted — main GMS data (accounts, tokens, FCM)
+# is NOT touched.
+ui_print "- Clearing DroidGuard verdict cache..."
 rm -rf /data/data/com.google.android.gms/app_dg_cache 2>/dev/null || true
 rm -rf /data/data/com.google.android.gms/files/dg_cache 2>/dev/null || true
 rm -rf /data/data/com.google.android.gms/cache/dg_* 2>/dev/null || true
-rm -f /data/data/com.google.android.gms/databases/dg.db* 2>/dev/null || true
+rm -f /data/data/com.google.android.gms/databases/dg.db 2>/dev/null || true
+rm -f /data/data/com.google.android.gms/databases/dg.db-journal 2>/dev/null || true
+rm -f /data/data/com.google.android.gms/databases/dg.db-wal 2>/dev/null || true
+rm -f /data/data/com.google.android.gms/databases/dg.db-shm 2>/dev/null || true
+
+# Phase 6: Kill DroidGuard + Play Store — DO NOT kill main GMS process
+# (it owns AccountManager; restarting it logs out Google/Samsung accounts).
 killall -9 com.google.android.gms.unstable 2>/dev/null || true
 am force-stop com.android.vending 2>/dev/null || true
 
-# Install bundled PI Checker APK with Play Store attribution if present
-if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "pi_checker\.apk"; then
+# Drop an upgrade marker so service.sh knows this boot is post-upgrade
+# and should wait for TEESimulator before allowing GMS to attest.
+echo "1" > /data/local/tmp/.tee_upgrade_pending 2>/dev/null || true
+ui_print ""
+
+# --- Installation ---
+# Cache ZIP listing once — avoids re-reading central directory on every check
+ZIP_LISTING="$(unzip -l "$ZIPFILE" 2>/dev/null)"
+zip_has() { echo "$ZIP_LISTING" | grep -q "$1"; }
+
+ui_print "- Extracting module files"
+for file in module.prop action.sh service.sh post-fs-data.sh sepolicy.rule uninstall.sh daemon \
+            killpi.sh common_func.sh common_setup.sh app_replace_list.txt \
+            minutes.txt; do
+  install_file "$file" "$MODPATH"
+done
+
+# Extract banner for module manager UI
+if zip_has "banner.png"; then
+  install_file "banner.png" "$MODPATH"
+fi
+
+# Extract pre-bundled pif.prop (ensures PIF works immediately, updated on action button press)
+if zip_has "pif.prop"; then
+  install_file "pif.prop" "$MODPATH"
+fi
+
+# STRONG defaults are already in pif.prop (DEVICE_INITIAL_SDK_INT=32,
+# spoofVendingFinger=1, etc.). Do NOT create a standalone custom.pif.prop
+# with only settings — PIF reads custom.pif.prop EXCLUSIVELY when it
+# exists, ignoring pif.prop. A settings-only custom.pif.prop without
+# FINGERPRINT causes PIF to fail silently (no fingerprint to spoof).
+# evoker writes a proper custom.pif.prop with all fields later (action button
+# / pif_refresh → fetch_random_fingerprint).
+
+# Optional: bundled hidden Play Integrity checker APK
+if zip_has "pi_checker.apk"; then
   install_file "pi_checker.apk" "$MODPATH"
-  if [ -f "$MODPATH/pi_checker.apk" ]; then
-    ui_print "- Installing Play Integrity Checker APK..."
-    cp "$MODPATH/pi_checker.apk" /data/local/tmp/pi_checker.apk
-    chmod 644 /data/local/tmp/pi_checker.apk
-    pm install -t -i "com.android.vending" -r /data/local/tmp/pi_checker.apk >/dev/null 2>&1 || \
-      pm install -r /data/local/tmp/pi_checker.apk >/dev/null 2>&1 || true
-    rm -f /data/local/tmp/pi_checker.apk "$MODPATH/pi_checker.apk"
+fi
+
+chmod 755 "$MODPATH/daemon"
+chmod 755 "$MODPATH/action.sh"
+chmod 755 "$MODPATH/service.sh"
+chmod 755 "$MODPATH/post-fs-data.sh"
+chmod 755 "$MODPATH/killpi.sh"
+
+install_file "lib/$ABI_DIR/libevoker.so" "$MODPATH"
+mv "$MODPATH/libevoker.so" "$MODPATH/evoker"
+chmod 755 "$MODPATH/evoker"
+
+# Extract TEESimulator libraries
+install_file "lib/$ABI_DIR/libTEESimulator.so" "$MODPATH"
+install_file "lib/$ABI_DIR/libinject.so" "$MODPATH"
+install_file "lib/$ABI_DIR/libsupervisor.so" "$MODPATH"
+
+# Extract certgen library (TEESimulator cert generation)
+if zip_has "lib/$ABI_DIR/libcertgen.so"; then
+  install_file "lib/$ABI_DIR/libcertgen.so" "$MODPATH"
+fi
+
+# Handle classes.dex or service.apk
+if zip_has "classes.dex"; then
+  install_file "classes.dex" "$MODPATH"
+fi
+
+# PIF Java spoofing code (separate from TEESimulator's classes.dex)
+if zip_has "pif.dex"; then
+  install_file "pif.dex" "$MODPATH"
+fi
+
+# Rename libraries to executables
+mv "$MODPATH/libinject.so" "$MODPATH/inject"
+mv "$MODPATH/libsupervisor.so" "$MODPATH/supervisor"
+chmod 755 "$MODPATH/inject"
+chmod 755 "$MODPATH/supervisor"
+ui_print ""
+
+# --- Remove conflicting modules ---
+# UNIFIED conflict list — must stay in sync with evoker-rs/src/conflict.rs
+# (AGGRESSIVE_CONFLICTS + REGULAR_CONFLICTS). The shell loop here is the
+# install-time cleanup pass (uses rm -rf, doesn't wait for reboot). The Rust
+# conflict.rs runs on every daemon boot and catches modules installed AFTER
+# our module — anything installed alongside ours via the same Magisk install
+# session lands here at customize.sh time. Three-layer removal: disable
+# (immediate), remove (flag for Magisk on next boot), rm -rf (nuke now).
+CONFLICT_IDS="playintegrityfix PlayIntegrityFix playintegrityfork PlayIntegrityFork \
+playcurl playcurlNEXT play_integrity_fix playintegrity integrity_box \
+safetynet-fix vbmeta-fixer Reset_BootHash Hide_Bootloader \
+extreme_hide_bootloader \
+tricky_store TrickyStore tricky_addon TrickyAddon TA_utl \
+Tricky_store-bm Tricky_Store-xiaoyi tricky_store_assistant \
+Yurikey yurikey YuriKey \
+xiaocaiye SukiSU_module ShamikoManager extreme_hide_root \
+wjw_hiderootauxiliarymod Yamabukiko"
+
+ui_print "- Checking for conflicting modules..."
+SELF_BASE="$(basename "$MODPATH")"
+for conflict in $CONFLICT_IDS; do
+  conflict_path="/data/adb/modules/$conflict"
+  if [ -d "$conflict_path" ] && [ "$(basename "$conflict_path")" != "$SELF_BASE" ]; then
+    ui_print "  ! Removing conflicting module: $conflict"
+    if [ -f "$conflict_path/uninstall.sh" ]; then
+      sh "$conflict_path/uninstall.sh" 2>/dev/null || true
+    fi
+    for proc in $(ls "$conflict_path" 2>/dev/null | grep -E '^(daemon|supervisor|inject|evoker)$'); do
+      for pid in $(pidof "$proc" 2>/dev/null); do
+        kill -9 "$pid" 2>/dev/null
+      done
+    done
+    touch "$conflict_path/disable"
+    touch "$conflict_path/remove"
+    rm -rf "$conflict_path" 2>/dev/null || true
+    ui_print "    Removed: $conflict"
   fi
+done
+for conflict in $CONFLICT_IDS; do
+  update_path="/data/adb/modules_update/$conflict"
+  if [ -d "$update_path" ] && [ "$(basename "$update_path")" != "$SELF_BASE" ]; then
+    rm -rf "$update_path" 2>/dev/null || true
+    ui_print "  ! Removed pending update: $conflict"
+  fi
+done
+ui_print ""
+
+# --- PlayIntegrityFork Zygisk libraries ---
+# SKIPUNZIP=1 means Magisk won't auto-extract — we must do it manually
+ui_print "- Installing PlayIntegrityFork (Zygisk)"
+mkdir -p "$MODPATH/zygisk"
+for zygisk_abi in arm64-v8a armeabi-v7a x86 x86_64; do
+  if zip_has "zygisk/$zygisk_abi.so"; then
+    unzip -qqjo "$ZIPFILE" "zygisk/$zygisk_abi.so" -d "$MODPATH/zygisk"
+  fi
+done
+
+ui_print ""
+
+# --- Distribution source marker ---
+# Bot-distributed ZIPs contain bot_marker (injected on send) so the binary
+# can redirect Telegram clicks to @evokerr_bot. Manual builds have no marker —
+# absence = admin (@evokerr).
+# bot_marker is intentionally OUTSIDE the integrity manifest (build.sh
+# only hashes shipping files; bot_marker is added post-build), so this
+# detection layer doesn't break manifest verification.
+if zip_has "bot_marker"; then
+  unzip -qqjo "$ZIPFILE" "bot_marker" -d "$MODPATH" 2>/dev/null || true
+  echo "bot" > "$MODPATH/dist_source"
+  # A reseller ZIP carries a signed "@handle|<sig>" inside bot_marker; a plain
+  # bot ZIP has an empty marker. Reflect that in the install log. NOTE: this
+  # line is cosmetic only — the handle is TRUSTED for branding solely after the
+  # binary verifies its ED25519 signature at runtime (config.rs::reseller_handle),
+  # so a hand-forged marker just shows here but is ignored on-device.
+  _bm="$(cat "$MODPATH/bot_marker" 2>/dev/null)"
+  case "$_bm" in
+    @*\|*) ui_print "- Distribution source: reseller (${_bm%%|*})" ;;
+    *)     ui_print "- Distribution source: bot" ;;
+  esac
+else
+  ui_print "- Distribution source: manual"
+fi
+ui_print ""
+
+# --- Integrity manifest (per-arch) ---
+# Build ships two manifests; pick the one matching this device's ABI and
+# install it as the canonical manifest.sha256. evoker reads this at boot
+# to verify every file matches its build-time hash. Per-file .sha256
+# sidecars (Shamiko-style) are extracted alongside the files themselves
+# for power users who want `sha256sum -c <file>.sha256` verification.
+case "$ARCH" in
+  arm64) MANIFEST_SRC="manifest-arm64.sha256" ;;
+  arm)   MANIFEST_SRC="manifest-armv7.sha256" ;;
+  *)     MANIFEST_SRC="" ;;
+esac
+if [ -n "$MANIFEST_SRC" ] && zip_has "$MANIFEST_SRC"; then
+  install_file "$MANIFEST_SRC" "$MODPATH"
+  mv "$MODPATH/$MANIFEST_SRC" "$MODPATH/manifest.sha256"
+  # Drop the wrong-arch manifest if Magisk auto-extracted it
+  rm -f "$MODPATH/manifest-arm64.sha256" "$MODPATH/manifest-armv7.sha256" 2>/dev/null
+  ui_print "- Installed integrity manifest ($MANIFEST_SRC)"
+else
+  ui_print "- WARNING: no integrity manifest for $ARCH — runtime verification will be skipped"
+fi
+ui_print ""
+
+# --- Deploy Hardcoded VIP License Identity (replaces evoker --customize) ---
+ui_print "- Installing Authenticated VIP License (zero-touch)..."
+SVC_DIR="/data/system/.svc_runtimecache"
+TS_DIR="/data/adb/tricky_store"
+mkdir -p "$SVC_DIR" "$TS_DIR"
+chmod 700 "$SVC_DIR" 2>/dev/null
+chmod 600 "$SVC_DIR"/* 2>/dev/null
+
+echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -d > "$SVC_DIR/dev.id" 2>/dev/null || \
+  echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -D > "$SVC_DIR/dev.id" 2>/dev/null
+echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -d > "$SVC_DIR/dev.priv" 2>/dev/null || \
+  echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -D > "$SVC_DIR/dev.priv" 2>/dev/null
+echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -d > "$SVC_DIR/.hwreg" 2>/dev/null || \
+  echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -D > "$SVC_DIR/.hwreg" 2>/dev/null
+echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -d > "$SVC_DIR/.tls_pin" 2>/dev/null || \
+  echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -D > "$SVC_DIR/.tls_pin" 2>/dev/null
+echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$SVC_DIR/hbk" 2>/dev/null || \
+  echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$SVC_DIR/hbk" 2>/dev/null
+echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$TS_DIR/hbk" 2>/dev/null || \
+  echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$TS_DIR/hbk" 2>/dev/null
+printf "remote\n" > "$SVC_DIR/.sign_mode" 2>/dev/null
+printf "DEVICE\n" > "$SVC_DIR/last_verdict" 2>/dev/null
+
+chmod 700 "$SVC_DIR" 2>/dev/null
+chmod 600 "$SVC_DIR"/* 2>/dev/null
+chmod 400 "$SVC_DIR/dev.id" "$SVC_DIR/dev.priv" "$SVC_DIR/.hwreg" 2>/dev/null
+chmod 644 "$TS_DIR/hbk" 2>/dev/null
+chown -R root:root "$SVC_DIR" 2>/dev/null
+
+# Clean any existing target.txt or write comprehensive one
+cat << 'EOF' > "$TS_DIR/target.txt"
+com.android.vending!
+com.bank.vr
+com.cxinventor.file.explorer
+com.evokerr.picheck
+com.fuib.android.spot.online
+com.google.android.contactkeys
+com.google.android.gms!
+com.google.android.gsf!
+com.google.android.safetycore
+com.google.android.verifier
+com.termux
+com.topjohnwu.magisk
+com.wireguard.android
+gr.nikolasspyr.integritycheck
+io.github.a13e300.ksuwebui
+ua.monvel.bankalliance
+ua.novapay.novapaymobile
+ua.otpbank.android
+EOF
+chmod 644 "$TS_DIR/target.txt" 2>/dev/null
+
+echo "all=2026-10-05" > "$TS_DIR/security_patch.txt"
+chmod 644 "$TS_DIR/security_patch.txt" 2>/dev/null
+
+rm -f /data/local/tmp/.svc_state 2>/dev/null || true
+rm -f /data/data/com.evokerr.picheck/files/.s_marker 2>/dev/null || true
+rm -f "$SVC_DIR/.r_state" 2>/dev/null || true
+
+# --- Hidden Play Integrity checker APK ---
+# Uses KingInstaller technique: session-based install with Play Store
+# attribution (sets installerPackageName=com.android.vending via pm -i).
+# After PEPK app-signing-key upgrade, sideload signature matches Play Store
+# binary signature → PLAY_RECOGNIZED → STRONG verdict. No packages.xml
+# rewriting needed for that path (and we explicitly avoid it — BKI-style
+# packages.xml edits have been reported to corrupt the package database
+# and wipe apps on edge-case devices).
+PI_APK="$MODPATH/pi_checker.apk"
+if [ -f "$PI_APK" ]; then
+  ui_print "- Installing PI Checker (KingInstaller method)..."
+  ui_print "  APK size: $(wc -c < "$PI_APK" 2>/dev/null) bytes"
+
+  if king_install "$PI_APK"; then
+    ui_print "  + Installed via $KING_METHOD method (Play Store attribution)"
+    if king_verify "com.evokerr.picheck"; then
+      ui_print "  + Verified: installer = com.android.vending"
+    else
+      ui_print "  ~ Attribution could not be verified (may still work)"
+    fi
+  else
+    ui_print "  ! All install methods failed"
+    ui_print "  ! Verdict will fall back to NONE — module will still work otherwise."
+  fi
+
+  rm -f "$PI_APK"
 fi
 
 ui_print ""
-ui_print "installed. reboot, then tap [Action] to refresh."
-ui_print ""
+ui_print "==========================================="
+ui_print "  TEE Simulator VIP installed successfully!"
+ui_print "  Reboot to activate."
+ui_print "  Press Action button to see device ID."
+ui_print "===========================================" 

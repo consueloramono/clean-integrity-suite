@@ -1,33 +1,8 @@
-#!/sbin/sh
-
-#################
-# Initialization
-#################
-
 umask 022
-
-# echo before loading util_functions
-ui_print() { echo "$1"; }
-
-require_new_magisk() {
-  ui_print "*******************************"
-  ui_print " Please install Magisk v20.4+! "
-  ui_print "*******************************"
-  exit 1
-}
-
-#########################
-# Load util_functions.sh
-#########################
-
-OUTFD=$2
-ZIPFILE=$3
-
-mount /data 2>/dev/null
-
-[ -f /data/adb/magisk/util_functions.sh ] || require_new_magisk
-. /data/adb/magisk/util_functions.sh
-[ $MAGISK_VER_CODE -lt 20400 ] && require_new_magisk
-
+SKIPUNZIP=1
+for _f in /data/adb/magisk/util_functions.sh /data/adb/ksu/util_functions.sh /data/adb/apatch/util_functions.sh; do
+  [ -f "$_f" ] && . "$_f" && break
+done
+[ "$(type -t install_module)" = "function" ] || { echo "Magisk/KernelSU/APatch not found!"; exit 1; }
 install_module
 exit 0
