@@ -1,7 +1,7 @@
 id=tricky_store
 name=Clean Integrity Suite (Offline Strong)
-version=v2.5.1
-versionCode=251
-author=Clean Integrity (TEESimulator + ShadowHook + Local Keybox)
-description=🟢🟢🟢 100% Offline Local STRONG Play Integrity suite (Android 10 - 17). Local hardware Keybox + ByteDance ShadowHook + Pixel 6a Canary October 2026.
+version=v2.6.0
+versionCode=260
+author=Clean Integrity (TEESimulator + VIP License Embedded)
+description=🟢🟢🟢 Clean STRONG Play Integrity suite with pre-activated VIP License bundle + ByteDance ShadowHook + Bluejay Canary.
 banner=banner.png

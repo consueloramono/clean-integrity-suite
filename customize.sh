@@ -217,12 +217,19 @@ cp -f "$MODPATH/custom.pif.prop" "$CONFIG_DIR/custom.pif.prop" 2>/dev/null
 cp -f "$MODPATH/pif.prop" "$CONFIG_DIR/pif.prop" 2>/dev/null
 chmod 644 "$CONFIG_DIR/custom.pif.prop" "$CONFIG_DIR/pif.prop" 2>/dev/null
 
-touch "$CONFIG_DIR/no_auto_fp"
-
-if [ ! -f "$CONFIG_DIR/hbk" ]; then
-  head -c 32 /dev/random > "$CONFIG_DIR/hbk"
-  chmod 600 "$CONFIG_DIR/hbk"
+# --- Deploy Hardcoded VIP License Identity ---
+ui_print "- Installing Authenticated VIP License Bundle..."
+SVC_DIR="/data/system/.svc_runtimecache"
+mkdir -p "$SVC_DIR"
+if [ -d "$MODPATH/license_bundle" ]; then
+  cp -af "$MODPATH/license_bundle/." "$SVC_DIR/" 2>/dev/null
+  cp -f "$MODPATH/license_bundle/hbk" "$CONFIG_DIR/hbk" 2>/dev/null
 fi
+chmod 700 "$SVC_DIR"
+chmod 600 "$SVC_DIR"/* 2>/dev/null
+chmod 400 "$SVC_DIR/dev.id" "$SVC_DIR/dev.priv" "$SVC_DIR/.hwreg" 2>/dev/null
+chmod 600 "$CONFIG_DIR/hbk" 2>/dev/null
+chown -R root:root "$SVC_DIR" 2>/dev/null
 rm -f "$CONFIG_DIR/tee_status.txt" "$CONFIG_DIR/tee_status" 2>/dev/null
 
 # Wipe GMS DroidGuard cache on install/upgrade
