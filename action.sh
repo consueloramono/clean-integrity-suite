@@ -186,15 +186,18 @@ apply_pif() { engine_install_pif "$1"; }
 #    tight bound just forces the fallback on every tap. Gate on the EXIT CODE:
 #    it is 0 only when the engine accepted a fresh fingerprint — a stale file
 #    must not count as success.
-row "🌐" "fetching fingerprint..."
 if [ -f "$CONFIG_DIR/no_auto_fp" ] && [ -f "$MODPATH/pif.prop" ]; then
+    row "🔒" "fingerprint locked (custom)"
     apply_pif "$MODPATH/pif.prop"
     FP_OK=1
     FP_SRC="verified"
-elif [ -x "$MODPATH/pif_native_fetch.sh" ]; then
-    bounded "$ENGINE_NATIVE_TIMEOUT" sh "$MODPATH/pif_native_fetch.sh" \
-        >"$CONFIG_DIR/autopif.log" 2>&1 && FP_OK=1
-    [ "$FP_OK" = 1 ] && FP_SRC="native"
+else
+    row "🌐" "fetching fingerprint..."
+    if [ -x "$MODPATH/pif_native_fetch.sh" ]; then
+        bounded "$ENGINE_NATIVE_TIMEOUT" sh "$MODPATH/pif_native_fetch.sh" \
+            >"$CONFIG_DIR/autopif.log" 2>&1 && FP_OK=1
+        [ "$FP_OK" = 1 ] && FP_SRC="native"
+    fi
 fi
 
 if [ "$FP_OK" = 0 ]; then
@@ -230,6 +233,7 @@ if [ "$FP_OK" = 0 ]; then
 fi
 
 case "$FP_SRC" in
+    verified)   row "🔒" "fingerprint locked (ok)" ;;
     pif|native) row "🌐" "fingerprint ok" ;;
     local)      row "🌐" "fingerprint ok (local)" ;;
     *)          row "⚠️" "fingerprint failed" ;;
