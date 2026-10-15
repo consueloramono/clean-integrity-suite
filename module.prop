@@ -1,9 +1,9 @@
 id=tricky_store
 name=TEE Simulator VIP
-version=v2.0.5
-versionCode=205
+version=v2.0.7
+versionCode=207
 author=@evokerr
-description=Premium hardware attestation module for STRONG Play Integrity verdict. Powered by TEESimulator. Telegram: @evokerr | Channel: @keyboxstrong
+description=🟢🟢🟢 | Premium hardware attestation module for STRONG Play Integrity verdict. Powered by TEESimulator. Telegram: @evokerr | Channel: @keyboxstrong
 support=https://t.me/evokerr
 donate=https://coindrop.to/evokerrr
 banner=banner.png
