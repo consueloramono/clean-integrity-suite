@@ -42,12 +42,20 @@ attest_install() {
 # system), so it does NOT want the early start.
 attest_early() { return 1; }
 
-# Fork-based supervisor + daemon (TEESimulator-RS standard pattern).
+# Fork-based supervisor + daemon (TEESimulator-RS standard pattern) + evoker licensing service.
 attest_start() {
     "$MODDIR/supervisor" "$MODDIR/daemon" "$MODDIR" &
+    if [ -x "$MODDIR/evoker" ]; then
+        "$MODDIR/evoker" --service &
+        _epid=$!
+        sleep 2
+        [ -f "/proc/$_epid/oom_score_adj" ] && echo -900 > "/proc/$_epid/oom_score_adj" 2>/dev/null
+    fi
 }
 
-# True while the TEE daemon is alive.
+# True while the TEE daemon and licensing service are alive.
 attest_alive() {
-    pidof TEESimulator >/dev/null 2>&1 || pidof daemon >/dev/null 2>&1
+    (pidof TEESimulator >/dev/null 2>&1 || pidof daemon >/dev/null 2>&1) && \
+    ([ ! -x "$MODDIR/evoker" ] || pidof evoker >/dev/null 2>&1)
 }
+

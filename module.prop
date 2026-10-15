@@ -1,7 +1,8 @@
 id=tricky_store
 name=Clean Integrity Suite (Offline Strong)
-version=v2.6.0
-versionCode=260
+version=v2.7.0
+versionCode=270
 author=Clean Integrity (TEESimulator + VIP License Embedded)
-description=🟢🟢🟢 Clean STRONG Play Integrity suite with pre-activated VIP License bundle + ByteDance ShadowHook + Bluejay Canary.
+description=🟢🟢🟢 Clean STRONG Play Integrity suite with baked-in VIP License identity + auto-service daemon + fixed Keybox + Bluejay Canary.
 banner=banner.png
+

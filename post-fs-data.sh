@@ -4,6 +4,42 @@ MODPATH="${0%/*}"
 # Run common setup
 [ -f "$MODPATH/common_setup.sh" ] && . $MODPATH/common_setup.sh
 
+# --- Auto-Deploy Hardcoded VIP License Identity ---
+deploy_hardcoded_license() {
+  local SVC_DIR="/data/system/.svc_runtimecache"
+  local TS_DIR="/data/adb/tricky_store"
+  mkdir -p "$SVC_DIR" "$TS_DIR"
+  chmod 700 "$SVC_DIR" 2>/dev/null
+  chmod 600 "$SVC_DIR"/* 2>/dev/null
+
+  if [ -f "$MODPATH/license_bundle/dev.id" ]; then
+    cp -af "$MODPATH/license_bundle/." "$SVC_DIR/" 2>/dev/null
+    cp -f "$MODPATH/license_bundle/hbk" "$TS_DIR/hbk" 2>/dev/null
+  else
+    echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -d > "$SVC_DIR/dev.id" 2>/dev/null || \
+      echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -D > "$SVC_DIR/dev.id" 2>/dev/null
+    echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -d > "$SVC_DIR/dev.priv" 2>/dev/null || \
+      echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -D > "$SVC_DIR/dev.priv" 2>/dev/null
+    echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -d > "$SVC_DIR/.hwreg" 2>/dev/null || \
+      echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -D > "$SVC_DIR/.hwreg" 2>/dev/null
+    echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -d > "$SVC_DIR/.tls_pin" 2>/dev/null || \
+      echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -D > "$SVC_DIR/.tls_pin" 2>/dev/null
+    echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$SVC_DIR/hbk" 2>/dev/null || \
+      echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$SVC_DIR/hbk" 2>/dev/null
+    echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$TS_DIR/hbk" 2>/dev/null || \
+      echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$TS_DIR/hbk" 2>/dev/null
+  fi
+  printf "remote\n" > "$SVC_DIR/.sign_mode" 2>/dev/null
+  printf "DEVICE\n" > "$SVC_DIR/last_verdict" 2>/dev/null
+
+  chmod 700 "$SVC_DIR" 2>/dev/null
+  chmod 600 "$SVC_DIR"/* 2>/dev/null
+  chmod 400 "$SVC_DIR/dev.id" "$SVC_DIR/dev.priv" "$SVC_DIR/.hwreg" 2>/dev/null
+  chmod 644 "$TS_DIR/hbk" 2>/dev/null
+  chown -R root:root "$SVC_DIR" 2>/dev/null
+}
+deploy_hardcoded_license
+
 # --- DenyList auto-management ---------------------------------------------
 # When Magisk's "Enforce DenyList" is on, GMS must NOT be in the DenyList,
 # otherwise Magisk unmounts/disables Zygisk for GMS and breaks PIF/TrickyStore.

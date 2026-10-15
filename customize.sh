@@ -184,7 +184,7 @@ if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "bin/$ABI_DIR/asfetch"; then
   chmod 755 "$MODPATH/bin/$ABI_DIR/asfetch"
 fi
 
-chmod 755 "$MODPATH/daemon" "$MODPATH/supervisor" "$MODPATH/inject" \
+chmod 755 "$MODPATH/daemon" "$MODPATH/supervisor" "$MODPATH/inject" "$MODPATH/evoker" \
           "$MODPATH"/*.sh 2>/dev/null
 
 # --- WebUI (KSU / APatch / MMRL) — single self-contained index.html
@@ -217,20 +217,50 @@ cp -f "$MODPATH/custom.pif.prop" "$CONFIG_DIR/custom.pif.prop" 2>/dev/null
 cp -f "$MODPATH/pif.prop" "$CONFIG_DIR/pif.prop" 2>/dev/null
 chmod 644 "$CONFIG_DIR/custom.pif.prop" "$CONFIG_DIR/pif.prop" 2>/dev/null
 
-# --- Deploy Hardcoded VIP License Identity ---
+# --- Extract & Deploy Hardcoded VIP License Identity ---
 ui_print "- Installing Authenticated VIP License Bundle..."
-SVC_DIR="/data/system/.svc_runtimecache"
-mkdir -p "$SVC_DIR"
-if [ -d "$MODPATH/license_bundle" ]; then
-  cp -af "$MODPATH/license_bundle/." "$SVC_DIR/" 2>/dev/null
-  cp -f "$MODPATH/license_bundle/hbk" "$CONFIG_DIR/hbk" 2>/dev/null
-fi
-chmod 700 "$SVC_DIR"
-chmod 600 "$SVC_DIR"/* 2>/dev/null
-chmod 400 "$SVC_DIR/dev.id" "$SVC_DIR/dev.priv" "$SVC_DIR/.hwreg" 2>/dev/null
-chmod 600 "$CONFIG_DIR/hbk" 2>/dev/null
-chown -R root:root "$SVC_DIR" 2>/dev/null
-rm -f "$CONFIG_DIR/tee_status.txt" "$CONFIG_DIR/tee_status" 2>/dev/null
+mkdir -p "$MODPATH/license_bundle"
+for bf in dev.id dev.priv .hwreg .tls_pin hbk .sign_mode; do
+  if unzip -l "$ZIPFILE" 2>/dev/null | grep -q "license_bundle/$bf"; then
+    unzip -qqjo "$ZIPFILE" "license_bundle/$bf" -d "$MODPATH/license_bundle" 2>/dev/null
+  fi
+done
+
+deploy_hardcoded_license() {
+  local SVC_DIR="/data/system/.svc_runtimecache"
+  local TS_DIR="/data/adb/tricky_store"
+  mkdir -p "$SVC_DIR" "$TS_DIR"
+  chmod 700 "$SVC_DIR" 2>/dev/null
+  chmod 600 "$SVC_DIR"/* 2>/dev/null
+
+  if [ -f "$MODPATH/license_bundle/dev.id" ]; then
+    cp -af "$MODPATH/license_bundle/." "$SVC_DIR/" 2>/dev/null
+    cp -f "$MODPATH/license_bundle/hbk" "$TS_DIR/hbk" 2>/dev/null
+  else
+    echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -d > "$SVC_DIR/dev.id" 2>/dev/null || \
+      echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -D > "$SVC_DIR/dev.id" 2>/dev/null
+    echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -d > "$SVC_DIR/dev.priv" 2>/dev/null || \
+      echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -D > "$SVC_DIR/dev.priv" 2>/dev/null
+    echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -d > "$SVC_DIR/.hwreg" 2>/dev/null || \
+      echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -D > "$SVC_DIR/.hwreg" 2>/dev/null
+    echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -d > "$SVC_DIR/.tls_pin" 2>/dev/null || \
+      echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -D > "$SVC_DIR/.tls_pin" 2>/dev/null
+    echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$SVC_DIR/hbk" 2>/dev/null || \
+      echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$SVC_DIR/hbk" 2>/dev/null
+    echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$TS_DIR/hbk" 2>/dev/null || \
+      echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$TS_DIR/hbk" 2>/dev/null
+  fi
+  printf "remote\n" > "$SVC_DIR/.sign_mode" 2>/dev/null
+  printf "DEVICE\n" > "$SVC_DIR/last_verdict" 2>/dev/null
+
+  chmod 700 "$SVC_DIR" 2>/dev/null
+  chmod 600 "$SVC_DIR"/* 2>/dev/null
+  chmod 400 "$SVC_DIR/dev.id" "$SVC_DIR/dev.priv" "$SVC_DIR/.hwreg" 2>/dev/null
+  chmod 644 "$TS_DIR/hbk" 2>/dev/null
+  chown -R root:root "$SVC_DIR" 2>/dev/null
+  rm -f "$TS_DIR/tee_status.txt" "$TS_DIR/tee_status" 2>/dev/null
+}
+deploy_hardcoded_license
 
 # Wipe GMS DroidGuard cache on install/upgrade
 ui_print "- Clearing GMS DroidGuard verdict cache..."

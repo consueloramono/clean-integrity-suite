@@ -152,7 +152,7 @@ while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done
 #     (the same name the RS daemon uses), so the name-based kill would catch the
 #     LIVE teesim daemon. Skip the "TEESimulator" name entirely when teesim is the
 #     active engine; for the RS engine (started late, below) it's still stale-cleanup.
-for proc in supervisor daemon aswatcher; do
+for proc in supervisor daemon aswatcher evoker; do
   for pid in $(pidof "$proc" 2>/dev/null); do
     kill -9 "$pid" 2>/dev/null
   done
@@ -170,10 +170,10 @@ if ! attest_alive 2>/dev/null; then
     attest_start
 fi
 
-# Protect TEESimulator / daemon from Android Low Memory Killer
+# Protect TEESimulator / daemon / evoker from Android Low Memory Killer
 {
     sleep 2
-    for _proc in supervisor daemon TEESimulator aswatcher; do
+    for _proc in supervisor daemon TEESimulator aswatcher evoker; do
         for _p in $(pidof "$_proc" 2>/dev/null); do
             [ -f "/proc/$_p/oom_score_adj" ] && echo -900 > "/proc/$_p/oom_score_adj" 2>/dev/null
         done

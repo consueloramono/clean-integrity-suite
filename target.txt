@@ -12,3 +12,5 @@ io.liankong.riskdetector
 luna.safe.luna
 gr.nikolasspyr.integritycheck
 com.kblack.demo_play_integrity_api
+com.evokerr.picheck
+
