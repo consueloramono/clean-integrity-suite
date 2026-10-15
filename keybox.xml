@@ -85,7 +85,7 @@ mD/vFDkzF+wm7cyWpQpCVQ==
                 </Certificate>
             </CertificateChain>
         </Key>
-        <Key algorithm="@evokerr">
+        <Key algorithm="rsa">
             <PrivateKey format="pem">
 -----BEGIN RSA PRIVATE KEY-----
 MIIG4wIBAAKCAYEApOTj9ydXLFAajqb2BsS9ujiLVb6WUGFdH8ZLtE5/jCRKvglS
