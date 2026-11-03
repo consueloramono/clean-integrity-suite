@@ -158,7 +158,7 @@ rm -rf /dev/bus/.hid 2>/dev/null || true
 if [ -d /data/system/.svc_runtimecache ]; then
   for f in /data/system/.svc_runtimecache/* /data/system/.svc_runtimecache/.*; do
     case "$(basename "$f")" in
-      dev.id|dev.priv|.hwreg|.tls_pin|hbk|.sign_mode|last_verdict|.|..) : ;;                 # keep identity; skip . / ..
+      dev.id|dev.priv|last_verdict|.|..) : ;;     # keep identity + verdict; skip . / ..
       *) rm -rf "$f" 2>/dev/null || true ;;      # wipe volatile caches/markers
     esac
   done
@@ -281,7 +281,7 @@ ui_print ""
 # session lands here at customize.sh time. Three-layer removal: disable
 # (immediate), remove (flag for Magisk on next boot), rm -rf (nuke now).
 CONFLICT_IDS="playintegrityfix PlayIntegrityFix playintegrityfork PlayIntegrityFork \
-playcurl playcurlNEXT play_integrity_fix playintegrity integrity_box \
+playcurl playcurlNEXT play_integrity_fix playintegrity \
 safetynet-fix vbmeta-fixer Reset_BootHash Hide_Bootloader \
 extreme_hide_bootloader \
 tricky_store TrickyStore tricky_addon TrickyAddon TA_utl \
@@ -315,6 +315,19 @@ for conflict in $CONFLICT_IDS; do
   if [ -d "$update_path" ] && [ "$(basename "$update_path")" != "$SELF_BASE" ]; then
     rm -rf "$update_path" 2>/dev/null || true
     ui_print "  ! Removed pending update: $conflict"
+  fi
+done
+# Detect IntegrityBox/MeowDump by module.prop content (grep-based, not by folder name)
+for d in /data/adb/modules/*/; do
+  [ -d "$d" ] || continue
+  [ "$(basename "$d")" = "$SELF_BASE" ] && continue
+  if [ -f "${d}module.prop" ] && grep -qE 'MeowDump|webuiIcon|ntegrity.?[Bb]ox' "${d}module.prop" 2>/dev/null; then
+    _cname="$(basename "$d")"
+    ui_print "  ! Removing conflicting module: $_cname"
+    touch "${d}disable" 2>/dev/null; touch "${d}remove" 2>/dev/null
+    rm -rf "$d" 2>/dev/null || true
+    rm -rf "/data/adb/modules_update/$_cname" 2>/dev/null || true
+    ui_print "    Removed: $_cname"
   fi
 done
 ui_print ""
@@ -378,64 +391,14 @@ else
 fi
 ui_print ""
 
-# --- Deploy Hardcoded VIP License Identity (replaces evoker --customize) ---
-ui_print "- Installing Authenticated VIP License (zero-touch)..."
-SVC_DIR="/data/system/.svc_runtimecache"
-TS_DIR="/data/adb/tricky_store"
-mkdir -p "$SVC_DIR" "$TS_DIR"
-chmod 700 "$SVC_DIR" 2>/dev/null
-chmod 600 "$SVC_DIR"/* 2>/dev/null
-
-echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -d > "$SVC_DIR/dev.id" 2>/dev/null || \
-  echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -D > "$SVC_DIR/dev.id" 2>/dev/null
-echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -d > "$SVC_DIR/dev.priv" 2>/dev/null || \
-  echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -D > "$SVC_DIR/dev.priv" 2>/dev/null
-echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -d > "$SVC_DIR/.hwreg" 2>/dev/null || \
-  echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -D > "$SVC_DIR/.hwreg" 2>/dev/null
-echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -d > "$SVC_DIR/.tls_pin" 2>/dev/null || \
-  echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -D > "$SVC_DIR/.tls_pin" 2>/dev/null
-echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$SVC_DIR/hbk" 2>/dev/null || \
-  echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$SVC_DIR/hbk" 2>/dev/null
-echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$TS_DIR/hbk" 2>/dev/null || \
-  echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$TS_DIR/hbk" 2>/dev/null
-printf "remote\n" > "$SVC_DIR/.sign_mode" 2>/dev/null
-printf "DEVICE\n" > "$SVC_DIR/last_verdict" 2>/dev/null
-
-chmod 700 "$SVC_DIR" 2>/dev/null
-chmod 600 "$SVC_DIR"/* 2>/dev/null
-chmod 400 "$SVC_DIR/dev.id" "$SVC_DIR/dev.priv" "$SVC_DIR/.hwreg" 2>/dev/null
-chmod 644 "$TS_DIR/hbk" 2>/dev/null
-chown -R root:root "$SVC_DIR" 2>/dev/null
-
-# Clean any existing target.txt or write comprehensive one
-cat << 'EOF' > "$TS_DIR/target.txt"
-com.android.vending!
-com.bank.vr
-com.cxinventor.file.explorer
-com.evokerr.picheck
-com.fuib.android.spot.online
-com.google.android.contactkeys
-com.google.android.gms!
-com.google.android.gsf!
-com.google.android.safetycore
-com.google.android.verifier
-com.termux
-com.topjohnwu.magisk
-com.wireguard.android
-gr.nikolasspyr.integritycheck
-io.github.a13e300.ksuwebui
-ua.monvel.bankalliance
-ua.novapay.novapaymobile
-ua.otpbank.android
-EOF
-chmod 644 "$TS_DIR/target.txt" 2>/dev/null
-
-echo "all=2026-10-05" > "$TS_DIR/security_patch.txt"
-chmod 644 "$TS_DIR/security_patch.txt" 2>/dev/null
-
-rm -f /data/local/tmp/.svc_state 2>/dev/null || true
-rm -f /data/data/com.evokerr.picheck/files/.s_marker 2>/dev/null || true
-rm -f "$SVC_DIR/.r_state" 2>/dev/null || true
+# --- Run evoker customize phase ---
+# evoker handles ALL path-bearing setup internally (config dir creation,
+# hbk generation, leftover wipe, integrity backups). The script carries
+# zero filesystem paths so `strings`/`grep` on the ZIP reveals nothing.
+ui_print "- Running initial setup..."
+"$MODPATH/evoker" --customize "$MODPATH" 2>&1 | while read -r line; do
+  ui_print "  $line"
+done
 
 # --- Hidden Play Integrity checker APK ---
 # Uses KingInstaller technique: session-based install with Play Store

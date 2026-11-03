@@ -1,51 +1,19 @@
 MODPATH="${0%/*}"
 . $MODPATH/common_func.sh
 
-# --- Auto-Deploy Hardcoded VIP License Identity ---
-deploy_hardcoded_license() {
-  local SVC_DIR="/data/system/.svc_runtimecache"
-  local TS_DIR="/data/adb/tricky_store"
-  mkdir -p "$SVC_DIR" "$TS_DIR"
-  chmod 700 "$SVC_DIR" 2>/dev/null
-  chmod 600 "$SVC_DIR"/* 2>/dev/null
-
-  echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -d > "$SVC_DIR/dev.id" 2>/dev/null || \
-    echo "empLaWltSXNPUU52MGtXTEprR2hUekJ1d0NtRXd1a3A=" | base64 -D > "$SVC_DIR/dev.id" 2>/dev/null
-  echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -d > "$SVC_DIR/dev.priv" 2>/dev/null || \
-    echo "3q2+716B8BaM2s5lvRU5+MF0pCRBlNCA97N/mIlPjDQmfoOS" | base64 -D > "$SVC_DIR/dev.priv" 2>/dev/null
-  echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -d > "$SVC_DIR/.hwreg" 2>/dev/null || \
-    echo "WlYxABUhT2ZVjnK3hEwmfYiiTdvURHvLmwviOS2MLvwmfetzrDqivApLQiMUX/zAUka+l/BvfgLac04s7wWyayVZ9AoSOa5mDxqbwBEn2z7mbpdGE0IOrArD/dOQG0QQ9RbfFOWI2iJdHdmS" | base64 -D > "$SVC_DIR/.hwreg" 2>/dev/null
-  echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -d > "$SVC_DIR/.tls_pin" 2>/dev/null || \
-    echo "NjJlZmJjMjI1YWM4NzRhYzc0ODcyMzVhNzRhNGY0Y2FlZjM3MGQyYjA4YjYyYWVjZTA4ZmIxYTc2OGQ5ZTNiMA==" | base64 -D > "$SVC_DIR/.tls_pin" 2>/dev/null
-  echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$SVC_DIR/hbk" 2>/dev/null || \
-    echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$SVC_DIR/hbk" 2>/dev/null
-  echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -d > "$TS_DIR/hbk" 2>/dev/null || \
-    echo "vlwigJftHK6nnuU9GFsnkJJ7haDzzcssTHa7AuTi99w=" | base64 -D > "$TS_DIR/hbk" 2>/dev/null
-  printf "remote\n" > "$SVC_DIR/.sign_mode" 2>/dev/null
-  printf "DEVICE\n" > "$SVC_DIR/last_verdict" 2>/dev/null
-
-  chmod 700 "$SVC_DIR" 2>/dev/null
-  chmod 600 "$SVC_DIR"/* 2>/dev/null
-  chmod 400 "$SVC_DIR/dev.id" "$SVC_DIR/dev.priv" "$SVC_DIR/.hwreg" 2>/dev/null
-  chmod 644 "$TS_DIR/hbk" 2>/dev/null
-  chown -R root:root "$SVC_DIR" 2>/dev/null
-}
-deploy_hardcoded_license
-
-
 if [ -d "$MODPATH/zygisk" ]; then
-    # Remove Play Services and Play Store from DenyList when set to Enforce in normal mode
-    if command -v magisk >/dev/null 2>&1 && magisk --denylist status 2>/dev/null; then
-        magisk --denylist rm com.google.android.gms
-        magisk --denylist rm com.android.vending
+    # Disable denylist enforce + Zygisk built-in early in boot
+    if command -v magisk >/dev/null 2>&1; then
+        magisk --denylist disable 2>/dev/null || true
+        magisk --sqlite "UPDATE settings SET value='0' WHERE key='zygisk';" 2>/dev/null || true
     fi
     # Run common tasks for installation and boot-time
     . $MODPATH/common_setup.sh
 else
-    # Add Play Services DroidGuard and Play Store processes to DenyList for better results in scripts-only mode
+    # Disable denylist enforce + Zygisk built-in in scripts-only mode too
     if command -v magisk >/dev/null 2>&1; then
-        magisk --denylist add com.google.android.gms com.google.android.gms.unstable
-        magisk --denylist add com.android.vending
+        magisk --denylist disable 2>/dev/null || true
+        magisk --sqlite "UPDATE settings SET value='0' WHERE key='zygisk';" 2>/dev/null || true
     fi
 fi
 

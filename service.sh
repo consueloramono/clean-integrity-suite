@@ -89,6 +89,40 @@ fi
     resetprop_if_diff ro.oem_unlock_supported 0
     resetprop_if_diff ro.crypto.state encrypted
 
+    # Magisk denylist setup: disable enforce + disable Zygisk built-in, then
+    # populate all GMS/Vending/GSF processes so they're ready when user needs them.
+    if command -v magisk >/dev/null 2>&1; then
+        magisk --denylist disable 2>/dev/null || true
+        magisk --sqlite "UPDATE settings SET value='0' WHERE key='zygisk';" 2>/dev/null || true
+        # GMS main + sub-processes
+        magisk --denylist add com.google.android.gms com.google.android.gms 2>/dev/null || true
+        magisk --denylist add com.google.android.gms com.google.android.gms.unstable 2>/dev/null || true
+        magisk --denylist add com.google.android.gms com.google.android.gms.persistent 2>/dev/null || true
+        magisk --denylist add com.google.android.gms com.google.android.gms.feedback 2>/dev/null || true
+        magisk --denylist add com.google.android.gms com.google.android.gms.learning 2>/dev/null || true
+        magisk --denylist add com.google.android.gms com.google.android.gms.remapping1 2>/dev/null || true
+        magisk --denylist add com.google.android.gms com.google.android.gms.room 2>/dev/null || true
+        magisk --denylist add com.google.android.gms com.google.android.gms.ui 2>/dev/null || true
+        magisk --denylist add com.google.android.gms com.google.android.gms:car 2>/dev/null || true
+        magisk --denylist add com.google.android.gms com.google.android.gms:identitycredentials 2>/dev/null || true
+        magisk --denylist add com.google.android.gms com.google.android.gms:snet 2>/dev/null || true
+        # GMS isolated
+        magisk --denylist add isolated com.google.android.gms: 2>/dev/null || true
+        # Play Store + sub-processes
+        magisk --denylist add com.android.vending com.android.vending 2>/dev/null || true
+        magisk --denylist add com.android.vending com.android.vending:background 2>/dev/null || true
+        magisk --denylist add com.android.vending com.android.vending:instant_app_installer 2>/dev/null || true
+        magisk --denylist add com.android.vending com.android.vending:quick_launch 2>/dev/null || true
+        magisk --denylist add com.android.vending com.android.vending:recovery_mode 2>/dev/null || true
+        # Vending isolated
+        magisk --denylist add isolated com.android.vending: 2>/dev/null || true
+        # GSF + shared processes
+        magisk --denylist add com.google.android.gsf com.google.android.gsf 2>/dev/null || true
+        magisk --denylist add com.google.android.gsf com.google.process.gapps 2>/dev/null || true
+        magisk --denylist add com.google.android.gsf com.google.process.gservices 2>/dev/null || true
+        log -t "TEE-SIM" "Magisk denylist disabled, Zygisk built-in disabled, entries populated"
+    fi
+
     # Hide root/recovery detection vectors
     # NOTE: /proc/cmdline is no longer chmod'd here — post-fs-data.sh now
     # bind-mounts a sanitized, WORLD-READABLE (green) copy over it. Re-hiding it
@@ -190,8 +224,31 @@ fi
     vbm_timeout=15
     vbm_counter=0
 
-    # Bail out early if pi-checker isn't installed
+    # Fallback: pin the AVB props WITHOUT pi-checker's attested boot hash. Used
+    # when pi-checker isn't installed or VbmetaFixerActivity never produced the
+    # hash in time. init already sets ro.boot.vbmeta.digest from the bootloader
+    # measurement, so we leave the digest intact and only pin the surrounding
+    # props (hash_alg/avb_version/size/invalidate_on_error/device_state) that an
+    # unlocked/wiped bootloader would otherwise leave missing or wrong. Mirrors
+    # alwaysstrong's direct post-fs-data approach — no app dependency.
+    vbmeta_fallback() {
+        resetprop ro.boot.vbmeta.hash_alg "sha256"
+        resetprop ro.boot.vbmeta.avb_version 1.0
+        _vbp="/dev/block/by-name/vbmeta$(getprop ro.boot.slot_suffix)"
+        [ -e "$_vbp" ] || _vbp="/dev/block/bootdevice/by-name/vbmeta$(getprop ro.boot.slot_suffix)"
+        _vbsz=$(/bin/toybox blockdev --getsize64 "$_vbp" 2>/dev/null)
+        [ -n "$_vbsz" ] && [ "$_vbsz" -gt 0 ] 2>/dev/null && resetprop ro.boot.vbmeta.size "$_vbsz"
+        resetprop ro.boot.vbmeta.invalidate_on_error "yes"
+        resetprop ro.boot.vbmeta.device_state "locked"
+        unset _vbp _vbsz
+        echo "vbmeta-fixer: service.sh - fallback props set (no picheck hash)" >> /dev/kmsg
+    }
+
+    # Bail out if pi-checker isn't installed — but pin the AVB props via the
+    # fallback first so DroidGuard's environment check still sees a locked chain.
     if ! pm list packages 2>/dev/null | grep -q "${VBM_PKG}"; then
+        until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 1; done
+        vbmeta_fallback
         exit 0 2>/dev/null
     fi
 
@@ -229,9 +286,12 @@ fi
             resetprop ro.boot.vbmeta.avb_version 1.0
 
             vbmeta_path="/dev/block/by-name/vbmeta$(getprop ro.boot.slot_suffix)"
-            vbmeta_size=$(/bin/toybox blockdev --getbsz "$vbmeta_path" 2>/dev/null)
+            [ -e "$vbmeta_path" ] || vbmeta_path="/dev/block/bootdevice/by-name/vbmeta$(getprop ro.boot.slot_suffix)"
+            # --getsize64 = partition byte size (e.g. 131072). NOT --getbsz,
+            # which returns the 4096 block size and pins a wrong vbmeta.size.
+            vbmeta_size=$(/bin/toybox blockdev --getsize64 "$vbmeta_path" 2>/dev/null)
             vbmeta_size=${vbmeta_size:-0}
-            resetprop ro.boot.vbmeta.size "$vbmeta_size"
+            [ "$vbmeta_size" -gt 0 ] 2>/dev/null && resetprop ro.boot.vbmeta.size "$vbmeta_size"
 
             resetprop ro.boot.vbmeta.invalidate_on_error "yes"
             resetprop ro.boot.vbmeta.device_state "locked"
@@ -253,6 +313,19 @@ fi
 
     if [ $vbm_counter -ge $vbm_timeout ]; then
         echo "vbmeta-fixer: service.sh - timeout waiting for hash file" >> /dev/kmsg
+        # pi-checker never produced the attested hash — pin the AVB props
+        # directly so the chain still looks locked instead of leaving them unset.
+        vbmeta_fallback
+    fi
+
+    # Fix pi-checker files/ ownership AFTER vbmeta-fixer has run.
+    # If anything created the dir as root, the app can't write pi_verdict.txt
+    # → checker shows UNCHECKED even when device is STRONG.
+    _pc_dir=/data/data/com.evokerr.picheck/files
+    if [ -d "$_pc_dir" ]; then
+        _pc_owner=$(stat -c '%u:%g' /data/data/com.evokerr.picheck 2>/dev/null)
+        [ -n "$_pc_owner" ] && chown -R "$_pc_owner" "$_pc_dir" 2>/dev/null
+        restorecon -R "$_pc_dir" 2>/dev/null || true
     fi
 }&
 
